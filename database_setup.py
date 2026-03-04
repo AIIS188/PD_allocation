@@ -137,6 +137,7 @@ TABLE_STATEMENTS = [
 		target_factory_id BIGINT COMMENT '目标工厂ID（关联pd_customers）',
 		target_factory_name VARCHAR(128) COMMENT '目标工厂名称',
 		product_name VARCHAR(64) COMMENT '货物品种',
+		products VARCHAR(255) COMMENT '品种列表，逗号分隔，最多4个',
 		quantity DECIMAL(12, 3) COMMENT '数量（吨）',
 		vehicle_no VARCHAR(32) COMMENT '车牌号',
 		driver_name VARCHAR(64) COMMENT '司机姓名',

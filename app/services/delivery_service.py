@@ -8,7 +8,7 @@ import shutil
 from decimal import Decimal
 from pathlib import Path
 from typing import Dict, List, Optional, Any
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from app.services.contract_service import get_conn
 from app.services.customer_service import CustomerService
@@ -43,6 +43,16 @@ class DeliveryService:
             return '司机'
         else:
             return '公司'
+
+    def _calculate_service_fee(self, has_delivery_order: str) -> Decimal:
+        """
+        计算联单费
+        - 无联单：150元
+        - 有联单：0元
+        """
+        if has_delivery_order == '无':
+            return Decimal('150')
+        return Decimal('0')
 
     def _calculate_price(self, factory_name: str, product_name: str, quantity: Decimal) -> tuple:
         """
@@ -87,7 +97,150 @@ class DeliveryService:
             logger.error(f"计算价格失败: {e}")
             return None, None, None
 
-    def create_delivery(self, data: Dict, image_file: bytes = None, current_user: dict = None) -> Dict[str, Any]:
+    def _get_contract_price_by_product(self, contract_no: str, product_name: str) -> Optional[float]:
+        """
+        根据合同编号和品种获取单价
+        """
+        try:
+            with get_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        SELECT p.unit_price 
+                        FROM pd_contract_products p
+                        JOIN pd_contracts c ON p.contract_id = c.id
+                        WHERE c.contract_no = %s 
+                        AND p.product_name = %s
+                        AND p.unit_price IS NOT NULL
+                        LIMIT 1
+                    """, (contract_no, product_name))
+
+                    row = cur.fetchone()
+                    if row and row[0]:
+                        return float(row[0])
+                    return None
+        except Exception as e:
+            logger.error(f"获取品种单价失败: {e}")
+            return None
+
+    def _create_pending_weighbills(self, delivery_id: int, contract_no: str,
+                                   products: List[str], vehicle_no: str,
+                                   uploader_id: int, uploader_name: str) -> bool:
+        """
+        为每个品种创建待上传磅单记录
+        一个品种一条记录，状态为"待上传磅单"
+        """
+        try:
+            with get_conn() as conn:
+                with conn.cursor() as cur:
+                    created_count = 0
+                    for product_name in products:
+                        # 检查是否已存在（防重复）
+                        cur.execute("""
+                            SELECT id FROM pd_weighbills 
+                            WHERE delivery_id = %s AND product_name = %s
+                        """, (delivery_id, product_name))
+
+                        if cur.fetchone():
+                            logger.warning(f"品种 {product_name} 的磅单已存在，跳过")
+                            continue
+
+                        # 获取该品种的合同单价
+                        unit_price = self._get_contract_price_by_product(contract_no, product_name)
+
+                        cur.execute("""
+                            INSERT INTO pd_weighbills 
+                            (delivery_id, contract_no, vehicle_no, product_name, 
+                             unit_price, upload_status, ocr_status, 
+                             uploader_id, uploader_name, uploaded_at)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                        """, (
+                            delivery_id,
+                            contract_no,
+                            vehicle_no,
+                            product_name,
+                            unit_price,
+                            '待上传',
+                            '待上传磅单',
+                            uploader_id,
+                            uploader_name
+                        ))
+                        created_count += 1
+
+                    logger.info(f"为报单 {delivery_id} 创建了 {created_count} 条待上传磅单记录")
+                    return True
+
+        except Exception as e:
+            logger.error(f"创建待上传磅单记录失败: {e}")
+            return False
+
+    def check_duplicate_in_24h(self, driver_phone: str, driver_id_card: str, exclude_id: int = None) -> Dict[str, Any]:
+        """
+        检查同一司机24小时内是否已报单
+        """
+        try:
+            with get_conn() as conn:
+                with conn.cursor() as cur:
+                    conditions = ["created_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)"]
+                    params = []
+
+                    if driver_phone:
+                        conditions.append("(driver_phone = %s OR driver_id_card = %s)")
+                        params.extend([driver_phone, driver_phone])
+                    if driver_id_card:
+                        conditions.append("(driver_phone = %s OR driver_id_card = %s)")
+                        params.extend([driver_id_card, driver_id_card])
+
+                    if exclude_id:
+                        conditions.append("id != %s")
+                        params.append(exclude_id)
+
+                    where_sql = "(" + " OR ".join(conditions[1:]) + ")" if len(conditions) > 1 else "1=1"
+                    where_sql = f"{conditions[0]} AND ({where_sql})"
+
+                    cur.execute(f"""
+                        SELECT id, contract_no, report_date, vehicle_no, driver_name, 
+                               driver_phone, driver_id_card, created_at
+                        FROM pd_deliveries
+                        WHERE {where_sql}
+                        ORDER BY created_at DESC
+                    """, tuple(params))
+
+                    columns = [desc[0] for desc in cur.description]
+                    rows = cur.fetchall()
+
+                    existing_orders = []
+                    for row in rows:
+                        order = dict(zip(columns, row))
+                        for key in ['report_date', 'created_at']:
+                            if order.get(key):
+                                order[key] = str(order[key])
+                        existing_orders.append(order)
+
+                    return {
+                        "is_duplicate": len(existing_orders) > 0,
+                        "existing_orders": existing_orders,
+                        "duplicate_count": len(existing_orders)
+                    }
+
+        except Exception as e:
+            logger.error(f"检查重复报单失败: {e}")
+            return {"is_duplicate": False, "existing_orders": [], "duplicate_count": 0, "error": str(e)}
+
+    def _build_operations(self, has_delivery_order: str, upload_status: str, image_path: Optional[str]) -> Dict[str, bool]:
+        """
+        构建操作权限标记
+        """
+        has_image = image_path and os.path.exists(image_path)
+        is_uploaded = upload_status == '已上传' or has_image
+
+        return {
+            "can_upload": not is_uploaded,
+            "can_modify": is_uploaded,
+            "can_view": is_uploaded
+        }
+
+    def create_delivery(self, data: Dict, image_file: bytes = None,
+                        current_user: dict = None, confirm_flag: bool = False) -> Dict[str, Any]:
         """创建报货订单"""
         image_path = None
         temp_file_path = None
@@ -106,32 +259,67 @@ class DeliveryService:
                 uploader_id = current_user.get("id")
                 uploader_name = current_user.get("name") or current_user.get("account") or "system"
 
-            if not data.get('shipper'):
-                data['shipper'] = uploader_name
+            # 处理报单人信息
+            reporter_id = data.get('reporter_id') or uploader_id
+            reporter_name = data.get('reporter_name') or data.get('shipper') or uploader_name
 
-            # 计算价格
+            if not data.get('shipper'):
+                data['shipper'] = reporter_name
+
+            # 计算联单费
+            service_fee = self._calculate_service_fee(has_order)
+
+            # 24小时重复校验
+            if not confirm_flag:
+                duplicate_check = self.check_duplicate_in_24h(
+                    data.get('driver_phone'),
+                    data.get('driver_id_card')
+                )
+                if duplicate_check.get("is_duplicate"):
+                    return {
+                        "success": False,
+                        "need_confirm": True,
+                        "error": f"该司机24小时内已有 {duplicate_check['duplicate_count']} 笔报单，是否继续提交？",
+                        "existing_orders": duplicate_check.get("existing_orders", [])
+                    }
+
+            # 处理品种列表（从报单数据中提取）
+            products = data.get('products', [])
+            if isinstance(products, str):
+                # 支持逗号分隔的字符串
+                products = [p.strip() for p in products.split(',') if p.strip()]
+
+            # 去重，最多4个品种
+            products = list(dict.fromkeys(products))[:4]
+
+            if not products:
+                # 如果没有传入品种列表，使用主品种
+                main_product = data.get('product_name')
+                if main_product:
+                    products = [main_product]
+
+            # 计算价格（使用第一个品种）
             contract_no = None
             unit_price = None
             total_amount = None
 
-            if data.get('target_factory_name') and data.get('product_name') and data.get('quantity'):
+            if data.get('target_factory_name') and products and data.get('quantity'):
                 contract_no, unit_price, total_amount = self._calculate_price(
                     data['target_factory_name'],
-                    data['product_name'],
+                    products[0],
                     Decimal(str(data['quantity']))
                 )
 
             # 确定上传状态
             upload_status = '待上传'
 
-            # 先处理图片到临时位置
+            # 处理联单图片
             if image_file and has_order == '有':
                 file_ext = ".jpg"
                 safe_name = re.sub(r'[^\w\-]', '_', str(data.get('vehicle_no', 'unknown')))
                 filename = f"order_{safe_name}_{datetime.now().strftime('%Y%m%d%H%M%S')}{file_ext}"
                 file_path = UPLOAD_DIR / filename
 
-                # 先保存到临时路径
                 temp_file_path = file_path
                 with open(file_path, "wb") as f:
                     f.write(image_file)
@@ -143,17 +331,18 @@ class DeliveryService:
                     cur.execute("""
                         INSERT INTO pd_deliveries 
                         (report_date, warehouse, target_factory_id, target_factory_name,
-                         product_name, quantity, vehicle_no, driver_name, driver_phone, driver_id_card,
+                         product_name, products, quantity, vehicle_no, driver_name, driver_phone, driver_id_card,
                          has_delivery_order, delivery_order_image, upload_status, source_type,
                          shipper, payee, service_fee, contract_no, contract_unit_price, total_amount, status,
-                         uploader_id, uploader_name, uploaded_at)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                         uploader_id, uploader_name, uploaded_at, reporter_id, reporter_name)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), %s, %s)
                     """, (
                         data.get('report_date'),
                         data.get('warehouse'),
                         data.get('target_factory_id'),
                         data.get('target_factory_name'),
-                        data.get('product_name'),
+                        products[0] if products else data.get('product_name'),  # 主品种
+                        ','.join(products) if products else None,  # 品种列表，逗号分隔
                         data.get('quantity'),
                         data.get('vehicle_no'),
                         data.get('driver_name'),
@@ -165,19 +354,29 @@ class DeliveryService:
                         source_type,
                         data.get('shipper'),
                         data.get('payee'),
-                        data.get('service_fee', 0),
+                        service_fee,
                         contract_no,
                         unit_price,
                         total_amount,
                         data.get('status', '待确认'),
                         uploader_id,
                         uploader_name,
+                        reporter_id,
+                        reporter_name,
                     ))
 
                     delivery_id = cur.lastrowid
 
-                    # 数据库成功后再确认文件（已经保存了，这里只是确认）
+                    # 为每个品种创建待上传磅单记录
+                    if products and contract_no:
+                        self._create_pending_weighbills(
+                            delivery_id, contract_no, products,
+                            data.get('vehicle_no'), uploader_id, uploader_name
+                        )
+
                     temp_file_path = None
+
+                    operations = self._build_operations(has_order, upload_status, image_path)
 
                     return {
                         "success": True,
@@ -185,17 +384,21 @@ class DeliveryService:
                         "data": {
                             "id": delivery_id,
                             "contract_no": contract_no,
+                            "products": products,
                             "contract_unit_price": unit_price,
                             "total_amount": total_amount,
                             "source_type": source_type,
                             "upload_status": upload_status,
+                            "service_fee": float(service_fee),
                             "uploader_id": uploader_id,
                             "uploader_name": uploader_name,
+                            "reporter_id": reporter_id,
+                            "reporter_name": reporter_name,
+                            "operations": operations
                         }
                     }
 
         except Exception as e:
-            # 如果数据库失败，删除已保存的图片
             if temp_file_path and os.path.exists(temp_file_path):
                 try:
                     os.remove(temp_file_path)
@@ -205,10 +408,9 @@ class DeliveryService:
             return {"success": False, "error": str(e)}
 
     def update_delivery(self, delivery_id: int, data: Dict,
-                        image_file: bytes = None, delete_image: bool = False) -> Dict[str, Any]:
-        """
-        更新报货订单（支持修改联单状态和重新上传图片）
-        """
+                        image_file: bytes = None, delete_image: bool = False,
+                        uploaded_by: str = None) -> Dict[str, Any]:
+        """更新报货订单"""
         temp_new_file = None
         old_image_to_delete = None
 
@@ -216,32 +418,38 @@ class DeliveryService:
             with get_conn() as conn:
                 with conn.cursor() as cur:
                     cur.execute(
-                        "SELECT has_delivery_order, delivery_order_image, upload_status FROM pd_deliveries WHERE id = %s",
+                        "SELECT has_delivery_order, delivery_order_image, upload_status, driver_phone, driver_id_card FROM pd_deliveries WHERE id = %s",
                         (delivery_id,)
                     )
                     old = cur.fetchone()
                     if not old:
                         return {"success": False, "error": f"订单ID {delivery_id} 不存在"}
 
-                    old_has_order, old_image_path, old_upload_status = old
+                    old_has_order, old_image_path, old_upload_status, old_driver_phone, old_driver_id_card = old
 
-                    # 处理来源类型
                     has_order = data.get('has_delivery_order', old_has_order)
-                    if 'has_delivery_order' in data or 'uploaded_by' in data:
-                        uploaded_by = data.get('uploaded_by')
+                    if 'has_delivery_order' in data or uploaded_by:
+                        data['uploaded_by'] = uploaded_by
                         data['source_type'] = self._determine_source_type(has_order, uploaded_by)
 
-                    # 处理图片 - 先准备新文件，不立即删除旧文件
+                    if 'has_delivery_order' in data and data['has_delivery_order'] != old_has_order:
+                        data['service_fee'] = self._calculate_service_fee(data['has_delivery_order'])
+
+                    if 'reporter_id' in data or 'reporter_name' in data:
+                        if data.get('reporter_name'):
+                            data['shipper'] = data['reporter_name']
+
                     new_image_path = old_image_path
-                    upload_status = old_upload_status  # 默认保持原状态
+                    upload_status = old_upload_status
 
                     if delete_image and old_image_path:
                         old_image_to_delete = old_image_path
                         new_image_path = None
                         upload_status = '待上传'
+                        if has_order == '有':
+                            data['service_fee'] = Decimal('0')
 
                     if image_file:
-                        # 保存新图片到临时位置（或最终位置，但记录旧文件待删除）
                         safe_name = re.sub(r'[^\w\-]', '_', str(delivery_id))
                         filename = f"delivery_{safe_name}_{datetime.now().strftime('%Y%m%d%H%M%S')}.jpg"
                         file_path = UPLOAD_DIR / filename
@@ -259,13 +467,12 @@ class DeliveryService:
                     data['delivery_order_image'] = new_image_path
                     data['upload_status'] = upload_status
 
-                    # 构建更新SQL
                     fields = [
                         'report_date', 'warehouse', 'target_factory_id', 'target_factory_name',
-                        'product_name', 'quantity', 'vehicle_no', 'driver_name', 'driver_phone', 'driver_id_card',
+                        'product_name', 'products', 'quantity', 'vehicle_no', 'driver_name', 'driver_phone', 'driver_id_card',
                         'has_delivery_order', 'delivery_order_image', 'upload_status', 'source_type',
                         'shipper', 'payee', 'service_fee', 'contract_no', 'contract_unit_price', 'total_amount',
-                        'status'
+                        'status', 'reporter_id', 'reporter_name'
                     ]
 
                     update_fields = []
@@ -275,7 +482,6 @@ class DeliveryService:
                             update_fields.append(f"{f} = %s")
                             params.append(data[f])
 
-                    # 关键修复：允许仅删除图片或仅上传图片
                     if not update_fields and not delete_image and not image_file:
                         return {"success": False, "error": "没有要更新的字段"}
 
@@ -283,12 +489,13 @@ class DeliveryService:
                     sql = f"UPDATE pd_deliveries SET {', '.join(update_fields)} WHERE id = %s"
                     cur.execute(sql, tuple(params))
 
-                    # 数据库更新成功后，再处理文件删除
                     if old_image_to_delete and os.path.exists(old_image_to_delete):
                         try:
                             os.remove(old_image_to_delete)
                         except Exception as e:
                             logger.warning(f"删除旧图片失败: {e}")
+
+                    operations = self._build_operations(has_order, upload_status, new_image_path)
 
                     return {
                         "success": True,
@@ -297,12 +504,15 @@ class DeliveryService:
                             "id": delivery_id,
                             "has_delivery_order": has_order,
                             "upload_status": upload_status,
-                            "delivery_order_image": new_image_path
+                            "delivery_order_image": new_image_path,
+                            "service_fee": float(data.get('service_fee', Decimal('0'))),
+                            "reporter_id": data.get('reporter_id'),
+                            "reporter_name": data.get('reporter_name'),
+                            "operations": operations
                         }
                     }
 
         except Exception as e:
-            # 如果数据库失败，删除新上传的临时文件
             if temp_new_file and os.path.exists(temp_new_file):
                 try:
                     os.remove(temp_new_file)
@@ -328,8 +538,23 @@ class DeliveryService:
                         if data.get(key):
                             data[key] = str(data[key])
 
-                    # 使用数据库中的 upload_status 字段
-                    data["delivery_order_upload_status"] = data.get("upload_status", "待上传")
+                    # 解析品种列表
+                    if data.get('products'):
+                        data['products'] = [p.strip() for p in data['products'].split(',') if p.strip()]
+                    else:
+                        data['products'] = [data.get('product_name')] if data.get('product_name') else []
+
+                    data["has_delivery_order_display"] = '是' if data.get('has_delivery_order') == '有' else '否'
+                    data["upload_status_display"] = '是' if data.get('upload_status') == '已上传' else '否'
+
+                    if data.get('service_fee'):
+                        data['service_fee'] = float(data['service_fee'])
+
+                    data['operations'] = self._build_operations(
+                        data.get('has_delivery_order'),
+                        data.get('upload_status'),
+                        data.get('delivery_order_image')
+                    )
 
                     return data
 
@@ -339,12 +564,17 @@ class DeliveryService:
 
     def list_deliveries(
             self,
-            exact_factory_name: str = None,
-            exact_status: str = None,
+            exact_shipper: str = None,
+            exact_contract_no: str = None,
+            exact_report_date: str = None,
+            exact_driver_name: str = None,
+            exact_vehicle_no: str = None,
             exact_has_delivery_order: str = None,
             exact_upload_status: str = None,
-            exact_vehicle_no: str = None,
-            exact_driver_name: str = None,
+            exact_reporter_name: str = None,
+            exact_reporter_id: int = None,
+            exact_factory_name: str = None,
+            exact_status: str = None,
             exact_driver_phone: str = None,
             fuzzy_keywords: str = None,
             date_from: str = None,
@@ -359,13 +589,25 @@ class DeliveryService:
                     where_clauses = []
                     params = []
 
-                    if exact_factory_name:
-                        where_clauses.append("target_factory_name = %s")
-                        params.append(exact_factory_name)
+                    if exact_shipper:
+                        where_clauses.append("shipper = %s")
+                        params.append(exact_shipper)
 
-                    if exact_status:
-                        where_clauses.append("status = %s")
-                        params.append(exact_status)
+                    if exact_contract_no:
+                        where_clauses.append("contract_no = %s")
+                        params.append(exact_contract_no)
+
+                    if exact_report_date:
+                        where_clauses.append("report_date = %s")
+                        params.append(exact_report_date)
+
+                    if exact_driver_name:
+                        where_clauses.append("driver_name = %s")
+                        params.append(exact_driver_name)
+
+                    if exact_vehicle_no:
+                        where_clauses.append("vehicle_no = %s")
+                        params.append(exact_vehicle_no)
 
                     if exact_has_delivery_order:
                         where_clauses.append("has_delivery_order = %s")
@@ -375,13 +617,21 @@ class DeliveryService:
                         where_clauses.append("upload_status = %s")
                         params.append(exact_upload_status)
 
-                    if exact_vehicle_no:
-                        where_clauses.append("vehicle_no = %s")
-                        params.append(exact_vehicle_no)
+                    if exact_reporter_name:
+                        where_clauses.append("reporter_name = %s")
+                        params.append(exact_reporter_name)
 
-                    if exact_driver_name:
-                        where_clauses.append("driver_name = %s")
-                        params.append(exact_driver_name)
+                    if exact_reporter_id:
+                        where_clauses.append("reporter_id = %s")
+                        params.append(exact_reporter_id)
+
+                    if exact_factory_name:
+                        where_clauses.append("target_factory_name = %s")
+                        params.append(exact_factory_name)
+
+                    if exact_status:
+                        where_clauses.append("status = %s")
+                        params.append(exact_status)
 
                     if exact_driver_phone:
                         where_clauses.append("driver_phone = %s")
@@ -394,9 +644,9 @@ class DeliveryService:
                             like = f"%{token}%"
                             or_clauses.append(
                                 "(vehicle_no LIKE %s OR driver_name LIKE %s OR driver_phone LIKE %s "
-                                "OR target_factory_name LIKE %s OR product_name LIKE %s)"
-                            )
-                            params.extend([like, like, like, like, like])
+                                "OR target_factory_name LIKE %s OR product_name LIKE %s OR contract_no LIKE %s "
+                                "OR reporter_name LIKE %s OR shipper LIKE %s)")
+                            params.extend([like, like, like, like, like, like, like, like])
                         if or_clauses:
                             where_clauses.append("(" + " OR ".join(or_clauses) + ")")
 
@@ -429,8 +679,28 @@ class DeliveryService:
                         for key in ['report_date', 'created_at', 'updated_at', 'uploaded_at']:
                             if item.get(key):
                                 item[key] = str(item[key])
-                        # 使用数据库中的 upload_status 字段
-                        item["delivery_order_upload_status"] = item.get("upload_status", "待上传")
+
+                        # 解析品种列表
+                        # 在 list_deliveries 方法中，返回前解析
+                        if item.get('products'):
+                            item['products'] = [p.strip() for p in item['products'].split(',') if p.strip()]
+                            item['product_count'] = len(item['products'])  # ← 品种数量
+                        else:
+                            item['products'] = [item.get('product_name')] if item.get('product_name') else []
+                            item['product_count'] = 1
+
+                        item["has_delivery_order_display"] = '是' if item.get('has_delivery_order') == '有' else '否'
+                        item["upload_status_display"] = '是' if item.get('upload_status') == '已上传' else '否'
+
+                        if item.get('service_fee'):
+                            item['service_fee'] = float(item['service_fee'])
+
+                        item['operations'] = self._build_operations(
+                            item.get('has_delivery_order'),
+                            item.get('upload_status'),
+                            item.get('delivery_order_image')
+                        )
+
                         data.append(item)
 
                     return {
@@ -446,18 +716,29 @@ class DeliveryService:
             return {"success": False, "error": str(e), "data": [], "total": 0}
 
     def delete_delivery(self, delivery_id: int) -> Dict[str, Any]:
-        """删除订单"""
+        """删除订单（级联删除关联磅单）"""
         try:
             with get_conn() as conn:
                 with conn.cursor() as cur:
+                    # 先删除关联磅单图片
+                    cur.execute("SELECT weighbill_image FROM pd_weighbills WHERE delivery_id = %s", (delivery_id,))
+                    for row in cur.fetchall():
+                        image_path = row[0]
+                        if image_path and os.path.exists(image_path):
+                            try:
+                                os.remove(image_path)
+                            except:
+                                pass
+
+                    # 获取联单图片路径
                     cur.execute("SELECT delivery_order_image FROM pd_deliveries WHERE id = %s", (delivery_id,))
                     row = cur.fetchone()
 
                     if row and row[0]:
                         image_path = row[0]
+                        # 级联删除由外键约束处理
                         cur.execute("DELETE FROM pd_deliveries WHERE id = %s", (delivery_id,))
 
-                        # 数据库删除成功后，再删除文件
                         if os.path.exists(image_path):
                             try:
                                 os.remove(image_path)

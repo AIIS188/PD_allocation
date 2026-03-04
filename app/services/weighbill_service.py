@@ -1,5 +1,5 @@
 """
-磅单服务 - OCR识别 + 自动关联 + 手动修正
+磅单服务 - 支持一报单多品种（最多4个）
 """
 import logging
 import os
@@ -15,7 +15,6 @@ from PIL import Image, ImageEnhance, ImageFilter
 
 try:
     from rapidocr_onnxruntime import RapidOCR
-
     RAPIDOCR_AVAILABLE = True
 except ImportError:
     RAPIDOCR_AVAILABLE = False
@@ -40,6 +39,8 @@ class WeighbillService:
                 logger.info("磅单OCR初始化成功")
             except Exception as e:
                 logger.error(f"磅单OCR初始化失败: {e}")
+
+    # ========== 图片预处理 ==========
 
     def preprocess_image(self, image_path: str) -> str:
         """图片预处理"""
@@ -66,11 +67,10 @@ class WeighbillService:
             logger.error(f"预处理失败: {e}")
             return image_path
 
+    # ========== OCR识别 ==========
+
     def recognize_weighbill(self, image_path: str) -> Dict[str, Any]:
-        """
-        OCR识别磅单
-        返回识别结果，所有字段都可能为None（供用户修正）
-        """
+        """OCR识别磅单"""
         if not self.ocr:
             return {
                 "success": True,
@@ -100,7 +100,6 @@ class WeighbillService:
             for i, line in enumerate(text_lines):
                 logger.info(f"{i}: {line['text']}")
 
-            # 解析磅单
             data = self._parse_weighbill(text_lines, full_text)
             data["ocr_time"] = round(total_elapse, 3)
             data["raw_text"] = full_text
@@ -137,8 +136,6 @@ class WeighbillService:
 
     def _parse_weighbill(self, text_lines: List[Dict], full_text: str) -> Dict:
         """解析磅单信息"""
-
-        # 提取各字段
         weigh_date = self._extract_date(full_text)
         ticket_no = self._extract_ticket_no(full_text)
         contract_no = self._extract_contract_no(full_text)
@@ -147,7 +144,6 @@ class WeighbillService:
         gross, tare, net = self._extract_weights(full_text)
         delivery, receive = self._extract_units(full_text)
 
-        # 检查缺失字段
         missing = []
         if not weigh_date:
             missing.append("日期")
@@ -177,24 +173,19 @@ class WeighbillService:
         }
 
     def _extract_date(self, text: str) -> Optional[str]:
-        """提取日期"""
         patterns = [
             r"日期[：:]\s*(\d{4}年\d{1,2}月\d{1,2}日)",
             r"(\d{4}年\d{1,2}月\d{1,2}日)",
+            r"(\d{4}-\d{2}-\d{2})",
         ]
         for pattern in patterns:
             match = re.search(pattern, text)
             if match:
-                date_str = match.group(1).replace("年", "-").replace("月", "-").replace("日", "")
-                return date_str
+                return match.group(1).replace("年", "-").replace("月", "-").replace("日", "")
         return None
 
     def _extract_ticket_no(self, text: str) -> Optional[str]:
-        """提取过磅单号"""
-        patterns = [
-            r"单据号[：:]\s*(\d+)",
-            r"磅单号[：:]\s*(\d+)",
-        ]
+        patterns = [r"单据号[：:]\s*(\d+)", r"磅单号[：:]\s*(\d+)", r"单号[：:]\s*(\d+)"]
         for pattern in patterns:
             match = re.search(pattern, text)
             if match:
@@ -202,7 +193,6 @@ class WeighbillService:
         return None
 
     def _extract_contract_no(self, text: str) -> Optional[str]:
-        """提取合同编号"""
         patterns = [
             r"合同编号[：:]\s*([A-Za-z0-9\-]+)",
             r"合同号[：:]\s*([A-Za-z0-9\-]+)",
@@ -214,7 +204,6 @@ class WeighbillService:
         return None
 
     def _extract_vehicle_no(self, text: str) -> Optional[str]:
-        """提取车牌号"""
         patterns = [
             r"车号[：:]\s*([京津沪渝冀豫云辽黑湘皖鲁新苏浙赣鄂桂甘晋蒙陕吉闽贵粤青藏川宁琼][A-Z][A-Z0-9]{4,6})",
             r"车牌[：:]\s*([京津沪渝冀豫云辽黑湘皖鲁新苏浙赣鄂桂甘晋蒙陕吉闽贵粤青藏川宁琼][A-Z][A-Z0-9]{4,6})",
@@ -227,10 +216,10 @@ class WeighbillService:
         return None
 
     def _extract_product_name(self, text: str) -> Optional[str]:
-        """提取货物名称"""
         patterns = [
             r"货物名称[：:]\s*(.+?)(?:\n|$)",
             r"品名[：:]\s*(.+?)(?:\n|$)",
+            r"货名[：:]\s*(.+?)(?:\n|$)",
         ]
         for pattern in patterns:
             match = re.search(pattern, text)
@@ -239,50 +228,72 @@ class WeighbillService:
         return None
 
     def _extract_weights(self, text: str) -> tuple:
-        """提取重量（毛重、皮重、净重）"""
         gross = tare = net = None
-
-        # 毛重
         match = re.search(r"毛重[：:]\s*(\d+\.?\d*)", text)
         if match:
             gross = float(match.group(1))
-
-        # 皮重
         match = re.search(r"皮重[：:]\s*(\d+\.?\d*)", text)
         if match:
             tare = float(match.group(1))
-
-        # 净重
         match = re.search(r"净重[：:]\s*(\d+\.?\d*)", text)
         if match:
             net = float(match.group(1))
-
         return gross, tare, net
 
     def _extract_units(self, text: str) -> tuple:
-        """提取送货/收货单位"""
         delivery = receive = None
-
         match = re.search(r"送货单位[：:]\s*(.+?)(?:\n|$)", text)
         if match:
             delivery = match.group(1).strip()
-
         match = re.search(r"收货单位[：:]\s*(.+?)(?:\n|$)", text)
         if match:
             receive = match.group(1).strip()
-
         return delivery, receive
 
-    def match_delivery_info(self, weigh_date: str, vehicle_no: str) -> Optional[Dict]:
-        """
-        通过日期+车牌号匹配报货订单
-        获取：送货库房、目标工厂、货物品种、司机信息等
-        """
+    # ========== 合同价格查询 ==========
+
+    def get_contract_price_by_product(self, contract_no: str, product_name: str) -> Optional[float]:
+        """根据合同编号和品种获取单价"""
         try:
             with get_conn() as conn:
                 with conn.cursor() as cur:
-                    # 模糊匹配：日期相同，车牌号相同
-                    # 允许日期前后1天的误差
+                    cur.execute("""
+                        SELECT p.unit_price 
+                        FROM pd_contract_products p
+                        JOIN pd_contracts c ON p.contract_id = c.id
+                        WHERE c.contract_no = %s 
+                        AND p.product_name = %s
+                        AND p.unit_price IS NOT NULL
+                        LIMIT 1
+                    """, (contract_no, product_name))
+                    row = cur.fetchone()
+                    if row and row[0]:
+                        return float(row[0])
+
+                    # 未找到，返回该合同第一个有价格的品种
+                    cur.execute("""
+                        SELECT p.unit_price
+                        FROM pd_contract_products p
+                        JOIN pd_contracts c ON p.contract_id = c.id
+                        WHERE c.contract_no = %s 
+                        AND p.unit_price IS NOT NULL
+                        LIMIT 1
+                    """, (contract_no,))
+                    row = cur.fetchone()
+                    if row and row[0]:
+                        return float(row[0])
+                    return None
+        except Exception as e:
+            logger.error(f"获取品种单价失败: {e}")
+            return None
+
+    # ========== 报单匹配 ==========
+
+    def match_delivery_info(self, weigh_date: str, vehicle_no: str) -> Optional[Dict]:
+        """通过日期+车牌号匹配报货订单"""
+        try:
+            with get_conn() as conn:
+                with conn.cursor() as cur:
                     cur.execute("""
                         SELECT * FROM pd_deliveries 
                         WHERE vehicle_no = %s 
@@ -295,84 +306,25 @@ class WeighbillService:
                         ORDER BY ABS(DATEDIFF(report_date, %s)), created_at DESC
                         LIMIT 1
                     """, (vehicle_no, weigh_date, weigh_date, weigh_date, weigh_date))
-
                     row = cur.fetchone()
                     if not row:
                         return None
-
                     columns = [desc[0] for desc in cur.description]
                     return dict(zip(columns, row))
-
         except Exception as e:
             logger.error(f"匹配报货订单失败: {e}")
             return None
 
-    def get_contract_price(self, contract_no: str, product_name: str) -> Optional[float]:
-        """
-        根据合同编号和品种获取单价
-        品种映射：废电瓶 -> 电动车/新能源等
-        """
-        try:
-            with get_conn() as conn:
-                with conn.cursor() as cur:
-                    # 品种映射表（废电瓶是统称，对应具体品种）
-                    product_mapping = {
-                        "废电瓶": ["电动车", "新能源", "通信", "摩托车", "大白", "牵引", "黑皮"],
-                        "新能源电瓶": ["新能源"],
-                        "电动车电瓶": ["电动车"],
-                    }
-
-                    # 获取该合同的所有品种及单价
-                    cur.execute("""
-                        SELECT p.product_name, p.unit_price 
-                        FROM pd_contract_products p
-                        JOIN pd_contracts c ON p.contract_id = c.id
-                        WHERE c.contract_no = %s 
-                        AND p.unit_price IS NOT NULL
-                        AND p.unit_price > 0
-                        ORDER BY p.sort_order
-                    """, (contract_no,))
-
-                    products = {}
-                    for row in cur.fetchall():
-                        if row[1]:
-                            products[row[0]] = float(row[1])
-
-                    if not products:
-                        return None
-
-                    # 直接匹配
-                    if product_name in products:
-                        return products[product_name]
-
-                    # 通过映射匹配
-                    for key, mapped_products in product_mapping.items():
-                        if key in product_name:
-                            # 返回映射品种中第一个有价格的
-                            for mp in mapped_products:
-                                if mp in products:
-                                    return products[mp]
-
-                    # 如果没匹配到，返回第一个有价格的品种
-                    return list(products.values())[0]
-
-        except Exception as e:
-            logger.error(f"获取合同价格失败: {e}")
-            return None
-
     def auto_fill_data(self, ocr_data: Dict) -> Dict:
-        """
-        自动关联填充数据
-        """
+        """自动关联填充数据"""
         result = ocr_data.copy()
-
         weigh_date = ocr_data.get("weigh_date")
         vehicle_no = ocr_data.get("vehicle_no")
         contract_no = ocr_data.get("contract_no")
-        product_name = ocr_data.get("product_name")  # "废电瓶"
+        product_name = ocr_data.get("product_name")
         net_weight = ocr_data.get("net_weight")
 
-        # 1. 匹配报货订单
+        # 匹配报货订单
         if weigh_date and vehicle_no:
             delivery = self.match_delivery_info(weigh_date, vehicle_no)
             if delivery:
@@ -386,9 +338,9 @@ class WeighbillService:
             else:
                 result["match_message"] = "未找到匹配的报货订单，请手动填写"
 
-        # 2. 获取合同单价（传入品种名称）
+        # 获取合同单价
         if contract_no and product_name:
-            price = self.get_contract_price(contract_no, product_name)
+            price = self.get_contract_price_by_product(contract_no, product_name)
             if price:
                 result["unit_price"] = price
                 if net_weight:
@@ -397,8 +349,7 @@ class WeighbillService:
             else:
                 result["price_message"] = "未找到合同单价，请手动填写"
         elif contract_no:
-            # 只有合同编号，没有品种，尝试获取默认单价
-            price = self.get_contract_price(contract_no, "废电瓶")
+            price = self.get_contract_price_by_product(contract_no, "废电瓶")
             if price:
                 result["unit_price"] = price
                 if net_weight:
@@ -409,171 +360,177 @@ class WeighbillService:
 
         return result
 
-    def create_weighbill(self, data: Dict, image_path: str = None, is_manual: bool = False,
-                         current_user: dict = None) -> Dict[str, Any]:
-        """创建磅单记录"""
-        try:
-            # 处理操作人信息
-            uploader_id = None
-            uploader_name = "system"
-            if current_user:
-                uploader_id = current_user.get("id")
-                uploader_name = current_user.get("name") or current_user.get("account") or "system"
+    # ========== 核心：上传/修改磅单 ==========
 
-            # 确定上传状态
-            upload_status = '已上传' if image_path else '待上传'
-
-            with get_conn() as conn:
-                with conn.cursor() as cur:
-                    cur.execute("""
-                        INSERT INTO pd_weighbills 
-                        (weigh_date, delivery_time, weigh_ticket_no, contract_no, delivery_id, vehicle_no,
-                         product_name, gross_weight, tare_weight, net_weight,
-                         unit_price, total_amount, weighbill_image, upload_status, ocr_status, 
-                         ocr_raw_data, is_manual_corrected, uploader_id, uploader_name, uploaded_at)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
-                    """, (
-                        data.get("weigh_date"),
-                        data.get("delivery_time"),
-                        data.get("weigh_ticket_no"),
-                        data.get("contract_no"),
-                        data.get("matched_delivery_id"),
-                        data.get("vehicle_no"),
-                        data.get("product_name"),
-                        data.get("gross_weight"),
-                        data.get("tare_weight"),
-                        data.get("net_weight"),
-                        data.get("unit_price"),
-                        data.get("total_amount"),
-                        image_path,
-                        upload_status,
-                        "已确认" if is_manual else "待确认",
-                        data.get("raw_text"),
-                        1 if is_manual else 0,
-                        uploader_id,
-                        uploader_name,
-                    ))
-
-                    bill_id = cur.lastrowid
-
-                    return {
-                        "success": True,
-                        "message": "磅单保存成功",
-                        "data": {
-                            "id": bill_id,
-                            "upload_status": upload_status,
-                            "uploader_id": uploader_id,
-                            "uploader_name": uploader_name,
-                        }
-                    }
-
-        except Exception as e:
-            logger.error(f"保存磅单失败: {e}")
-            return {"success": False, "error": str(e)}
-
-    def update_weighbill(self, bill_id: int, data: Dict) -> Dict[str, Any]:
-        """更新磅单（人工修正）"""
-        try:
-            with get_conn() as conn:
-                with conn.cursor() as cur:
-                    # 检查是否存在
-                    cur.execute("SELECT id FROM pd_weighbills WHERE id = %s", (bill_id,))
-                    if not cur.fetchone():
-                        return {"success": False, "error": "磅单不存在"}
-
-                    # 构建更新SQL
-                    fields = [
-                        "weigh_date", "delivery_time", "weigh_ticket_no", "contract_no", "delivery_id", "vehicle_no",
-                        "product_name", "gross_weight", "tare_weight", "net_weight",
-                        "unit_price", "total_amount", "ocr_status", "is_manual_corrected"
-                    ]
-
-                    update_fields = []
-                    params = []
-                    for f in fields:
-                        if f in data:
-                            update_fields.append(f"{f} = %s")
-                            params.append(data[f])
-
-                    # 标记为已修正
-                    update_fields.append("is_manual_corrected = %s")
-                    params.append(1)
-                    update_fields.append("ocr_status = %s")
-                    params.append("已修正")
-
-                    params.append(bill_id)
-                    sql = f"UPDATE pd_weighbills SET {', '.join(update_fields)} WHERE id = %s"
-                    cur.execute(sql, tuple(params))
-
-                    return {"success": True, "message": "更新成功"}
-
-        except Exception as e:
-            logger.error(f"更新磅单失败: {e}")
-            return {"success": False, "error": str(e)}
-
-    def confirm_weighbill(self, bill_id: int) -> Dict[str, Any]:
+    def upload_weighbill(self, delivery_id: int, product_name: str,
+                         data: Dict, image_file: bytes = None,
+                         current_user: dict = None, is_manual: bool = False) -> Dict[str, Any]:
         """
-        确认磅单（不标记为已修正）
-        同时更新关联的报货订单状态为"已完成"
+        上传磅单（按品种上传）
+        一个报单ID + 一个品种 = 唯一磅单记录
         """
+        image_path = None
+
         try:
             with get_conn() as conn:
                 with conn.cursor() as cur:
-                    # 先获取磅单信息
+                    # 检查报单是否存在
                     cur.execute("""
-                        SELECT w.id, w.delivery_id
-                        FROM pd_weighbills w
-                        WHERE w.id = %s
-                    """, (bill_id,))
+                        SELECT d.*, w.id as existing_weighbill_id, w.weighbill_image
+                        FROM pd_deliveries d
+                        LEFT JOIN pd_weighbills w ON w.delivery_id = d.id AND w.product_name = %s
+                        WHERE d.id = %s
+                    """, (product_name, delivery_id))
 
                     row = cur.fetchone()
                     if not row:
-                        return {"success": False, "error": "磅单不存在"}
+                        return {"success": False, "error": "报单不存在"}
 
-                    weighbill_id, delivery_id = row
+                    columns = [desc[0] for desc in cur.description]
+                    delivery_info = dict(zip(columns, row))
+                    existing_weighbill_id = delivery_info.get('existing_weighbill_id')
+                    existing_image = delivery_info.get('weighbill_image')
 
-                    # 更新磅单状态
-                    cur.execute(
-                        "UPDATE pd_weighbills SET ocr_status = %s WHERE id = %s",
-                        ("已确认", bill_id),
-                    )
+                    # 操作人信息
+                    uploader_id = None
+                    uploader_name = "system"
+                    if current_user:
+                        uploader_id = current_user.get("id")
+                        uploader_name = current_user.get("name") or current_user.get("account") or "system"
 
-                    # 更新关联的报货订单状态
-                    if delivery_id:
-                        cur.execute(
-                            "UPDATE pd_deliveries SET status = %s WHERE id = %s AND status NOT IN (%s, %s)",
-                            ("已完成", delivery_id, "已取消", "已完成"),
-                        )
+                    # 处理图片
+                    if image_file:
+                        file_ext = ".jpg"
+                        safe_name = re.sub(r'[^\w\-]', '_', f"{delivery_id}_{product_name}")
+                        filename = f"weighbill_{safe_name}_{datetime.now().strftime('%Y%m%d%H%M%S')}{file_ext}"
+                        file_path = UPLOAD_DIR / filename
+                        with open(file_path, "wb") as f:
+                            f.write(image_file)
+                        image_path = str(file_path)
 
-                    conn.commit()
+                    # 计算金额
+                    unit_price = data.get('unit_price')
+                    net_weight = data.get('net_weight')
+                    total_amount = None
+                    if unit_price and net_weight:
+                        total_amount = round(float(unit_price) * float(net_weight), 2)
+
+                    # 更新或插入
+                    if existing_weighbill_id:
+                        # 修改现有记录
+                        update_fields = []
+                        params = []
+
+                        fields = ['weigh_date', 'weigh_ticket_no', 'contract_no', 'vehicle_no',
+                                  'gross_weight', 'tare_weight', 'net_weight', 'delivery_time',
+                                  'unit_price', 'total_amount', 'ocr_raw_data']
+
+                        for f in fields:
+                            if f in data:
+                                update_fields.append(f"{f} = %s")
+                                params.append(data[f])
+
+                        if image_path:
+                            update_fields.append("weighbill_image = %s")
+                            params.append(image_path)
+                            if existing_image and os.path.exists(existing_image):
+                                try:
+                                    os.remove(existing_image)
+                                except:
+                                    pass
+
+                        update_fields.extend([
+                            "upload_status = %s", "ocr_status = %s",
+                            "uploader_id = %s", "uploader_name = %s", "uploaded_at = NOW()"
+                        ])
+                        params.extend(['已上传', '已上传磅单', uploader_id, uploader_name])
+
+                        if is_manual:
+                            update_fields.append("is_manual_corrected = %s")
+                            params.append(1)
+
+                        params.append(existing_weighbill_id)
+                        sql = f"UPDATE pd_weighbills SET {', '.join(update_fields)} WHERE id = %s"
+                        cur.execute(sql, tuple(params))
+
+                        weighbill_id = existing_weighbill_id
+                        message = "磅单修改成功"
+                    else:
+                        # 首次上传（插入新记录）
+                        cur.execute("""
+                            INSERT INTO pd_weighbills 
+                            (delivery_id, weigh_date, delivery_time, weigh_ticket_no, contract_no,
+                             vehicle_no, product_name, gross_weight, tare_weight, net_weight,
+                             unit_price, total_amount, weighbill_image, upload_status, ocr_status,
+                             ocr_raw_data, is_manual_corrected, uploader_id, uploader_name, uploaded_at)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                        """, (
+                            delivery_id, data.get('weigh_date'), data.get('delivery_time'),
+                            data.get('weigh_ticket_no'), data.get('contract_no'),
+                            data.get('vehicle_no'), product_name,
+                            data.get('gross_weight'), data.get('tare_weight'), data.get('net_weight'),
+                            unit_price, total_amount, image_path,
+                            '已上传', '已上传磅单', data.get('raw_text'),
+                            1 if is_manual else 0, uploader_id, uploader_name,
+                        ))
+                        weighbill_id = cur.lastrowid
+                        message = "磅单上传成功"
+
+                    # 检查是否全部上传完成
+                    cur.execute("""
+                        SELECT COUNT(*) FROM pd_weighbills 
+                        WHERE delivery_id = %s AND upload_status = '已上传'
+                    """, (delivery_id,))
+                    uploaded_count = cur.fetchone()[0]
+
+                    products = []
+                    if delivery_info.get('products'):
+                        products = [p.strip() for p in delivery_info['products'].split(',') if p.strip()]
+
+                    all_uploaded = uploaded_count >= len(products) if products else uploaded_count > 0
 
                     return {
                         "success": True,
-                        "message": "磅单已确认",
+                        "message": message,
                         "data": {
-                            "weighbill_id": bill_id,
-                            "delivery_id": delivery_id
+                            "weighbill_id": weighbill_id,
+                            "delivery_id": delivery_id,
+                            "product_name": product_name,
+                            "upload_status": "已上传",
+                            "ocr_status": "已上传磅单",
+                            "unit_price": unit_price,
+                            "total_amount": total_amount,
+                            "all_uploaded": all_uploaded,
+                            "uploaded_count": uploaded_count,
+                            "total_count": len(products)
                         }
                     }
 
         except Exception as e:
-            logger.error(f"确认磅单失败: {e}")
+            if image_path and os.path.exists(image_path):
+                try:
+                    os.remove(image_path)
+                except:
+                    pass
+            logger.error(f"上传磅单失败: {e}")
             return {"success": False, "error": str(e)}
 
-    def get_weighbill(self, bill_id: int) -> Optional[Dict]:
-        """获取磅单详情"""
+    # ========== 查询 ==========
+
+    def get_weighbill(self, weighbill_id: int) -> Optional[Dict]:
+        """获取磅单详情（包含报单信息）"""
         try:
             with get_conn() as conn:
                 with conn.cursor() as cur:
-                    cur.execute(
-                        """
-                        SELECT w.*, d.shipper, d.payee
+                    cur.execute("""
+                        SELECT w.*, d.report_date, d.warehouse, d.target_factory_name,
+                               d.driver_name, d.driver_phone, d.driver_id_card,
+                               d.has_delivery_order, d.shipper, d.payee, d.reporter_name,
+                               d.service_fee, d.contract_no as d_contract_no
                         FROM pd_weighbills w
                         LEFT JOIN pd_deliveries d ON w.delivery_id = d.id
                         WHERE w.id = %s
-                        """,
-                        (bill_id,)
-                    )
+                    """, (weighbill_id,))
                     row = cur.fetchone()
                     if not row:
                         return None
@@ -586,143 +543,229 @@ class WeighbillService:
                         if data.get(key):
                             data[key] = str(data[key])
 
+                    # 转换金额
+                    for key in ["gross_weight", "tare_weight", "net_weight", "unit_price", "total_amount", "service_fee"]:
+                        if data.get(key):
+                            data[key] = float(data[key])
+
+                    # 显示字段
+                    data["is_manual_corrected_display"] = "是" if data.get("is_manual_corrected") == 1 else "否"
+                    data["ocr_status_display"] = data.get("ocr_status", "待上传磅单")
+                    data["has_delivery_order_display"] = "是" if data.get("has_delivery_order") == "有" else "否"
+
+                    # 操作权限
+                    is_uploaded = data.get("upload_status") == "已上传" and data.get("weighbill_image")
+                    data["operations"] = {
+                        "can_upload": not is_uploaded,
+                        "can_modify": is_uploaded,
+                        "can_view": is_uploaded
+                    }
+
                     return data
 
         except Exception as e:
             logger.error(f"查询磅单失败: {e}")
             return None
 
-    def list_weighbills(
-        self,
-        exact_status: Optional[str] = None,
-        exact_vehicle_no: Optional[str] = None,
-        exact_contract_no: Optional[str] = None,
-        fuzzy_keywords: Optional[str] = None,
-        date_from: Optional[str] = None,
-        date_to: Optional[str] = None,
-        page: int = 1,
-        page_size: int = 20,
+    def list_weighbills_grouped(
+            self,
+            exact_shipper: str = None,
+            exact_contract_no: str = None,
+            exact_report_date: str = None,
+            exact_driver_name: str = None,
+            exact_vehicle_no: str = None,
+            exact_weigh_date: str = None,
+            exact_ocr_status: str = None,
+            exact_delivery_id: int = None,
+            page: int = 1,
+            page_size: int = 20
     ) -> Dict[str, Any]:
-        """查询磅单列表 - 包含完整的报货订单（台账）信息"""
+        """
+        查询磅单列表（按报单ID分组）
+        返回嵌套结构：报单信息 + 该报单下的所有磅单列表
+        """
         try:
             with get_conn() as conn:
                 with conn.cursor() as cur:
-                    where_clauses = ["1=1"]
-                    params = []
+                    # 构建报单查询条件
+                    delivery_where = ["1=1"]
+                    delivery_params = []
 
-                    if exact_status:
-                        where_clauses.append("w.ocr_status = %s")
-                        params.append(exact_status)
-
-                    if exact_vehicle_no:
-                        where_clauses.append("w.vehicle_no = %s")
-                        params.append(exact_vehicle_no)
-
+                    if exact_shipper:
+                        delivery_where.append("d.shipper = %s")
+                        delivery_params.append(exact_shipper)
                     if exact_contract_no:
-                        where_clauses.append("w.contract_no = %s")
-                        params.append(exact_contract_no)
+                        delivery_where.append("d.contract_no = %s")
+                        delivery_params.append(exact_contract_no)
+                    if exact_report_date:
+                        delivery_where.append("d.report_date = %s")
+                        delivery_params.append(exact_report_date)
+                    if exact_driver_name:
+                        delivery_where.append("d.driver_name = %s")
+                        delivery_params.append(exact_driver_name)
+                    if exact_vehicle_no:
+                        delivery_where.append("d.vehicle_no = %s")
+                        delivery_params.append(exact_vehicle_no)
+                    if exact_delivery_id:
+                        delivery_where.append("d.id = %s")
+                        delivery_params.append(exact_delivery_id)
 
-                    if date_from:
-                        where_clauses.append("w.weigh_date >= %s")
-                        params.append(date_from)
+                    delivery_sql = " AND ".join(delivery_where)
 
-                    if date_to:
-                        where_clauses.append("w.weigh_date <= %s")
-                        params.append(date_to)
-
-                    if fuzzy_keywords:
-                        tokens = [t for t in fuzzy_keywords.split() if t]
-                        or_clauses = []
-                        for token in tokens:
-                            like = f"%{token}%"
-                            or_clauses.append(
-                                "(w.contract_no LIKE %s OR w.vehicle_no LIKE %s OR w.product_name LIKE %s "
-                                "OR w.weigh_ticket_no LIKE %s)"
-                            )
-                            params.extend([like, like, like, like])
-                        if or_clauses:
-                            where_clauses.append("(" + " OR ".join(or_clauses) + ")")
-
-                    where = "WHERE " + " AND ".join(where_clauses)
-
-                    # 总数
-                    cur.execute(f"SELECT COUNT(*) FROM pd_weighbills w {where}", tuple(params))
+                    # 查询报单总数
+                    cur.execute(f"""
+                        SELECT COUNT(DISTINCT d.id) 
+                        FROM pd_deliveries d
+                        WHERE {delivery_sql}
+                    """, tuple(delivery_params))
                     total = cur.fetchone()[0]
 
-                    # 分页 - 包含完整的报货订单（台账）字段
+                    # 分页查询报单ID
                     offset = (page - 1) * page_size
                     cur.execute(f"""
-                        SELECT
-                            -- 磅单基础字段
-                            w.id,
-                            w.weigh_date,
-                            w.delivery_time,
-                            w.weigh_ticket_no,
-                            w.contract_no,
-                            w.delivery_id,
-                            w.vehicle_no,
-                            w.product_name,
-                            w.gross_weight,
-                            w.tare_weight,
-                            w.net_weight,
-                            w.unit_price,
-                            w.total_amount,
-                            w.weighbill_image,
-                            w.upload_status,
-                            w.ocr_status,
-                            w.ocr_raw_data,
-                            w.is_manual_corrected,
-                            w.uploader_id,
-                            w.uploader_name,
-                            w.uploaded_at,
-                            w.created_at,
-                            w.updated_at,
-                            w.payment_schedule_date,
-                            -- 报货订单（台账）完整字段
-                            d.report_date AS delivery_report_date,
-                            d.warehouse AS delivery_warehouse,
-                            d.target_factory_id AS delivery_target_factory_id,
-                            d.target_factory_name AS delivery_target_factory_name,
-                            d.quantity AS delivery_quantity,
-                            d.driver_name AS delivery_driver_name,
-                            d.driver_phone AS delivery_driver_phone,
-                            d.driver_id_card AS delivery_driver_id_card,
-                            d.has_delivery_order AS delivery_has_delivery_order,
-                            d.delivery_order_image AS delivery_order_image,
-                            d.upload_status AS delivery_upload_status,  -- 新增：联单上传状态
-                            d.source_type AS delivery_source_type,
-                            d.shipper AS delivery_shipper,
-                            d.payee AS delivery_payee,
-                            d.service_fee AS delivery_service_fee,
-                            d.contract_no AS delivery_contract_no,
-                            d.contract_unit_price AS delivery_contract_unit_price,
-                            d.total_amount AS delivery_total_amount,
-                            d.status AS delivery_status
-                        FROM pd_weighbills w
-                        LEFT JOIN pd_deliveries d ON w.delivery_id = d.id
-                        {where}
-                        ORDER BY w.created_at DESC
+                        SELECT DISTINCT d.id,d.created_at
+                        FROM pd_deliveries d
+                        WHERE {delivery_sql}
+                        ORDER BY d.created_at DESC
                         LIMIT %s OFFSET %s
-                    """, tuple(params + [page_size, offset]))
+                    """, tuple(delivery_params + [page_size, offset]))
+                    delivery_ids = [row[0] for row in cur.fetchall()]
 
-                    columns = [desc[0] for desc in cur.description]
-                    rows = cur.fetchall()
-                    data = []
-                    for row in rows:
-                        item = dict(zip(columns, row))
-                        # 转换时间字段为字符串
-                        for key in ["weigh_date", "delivery_time", "created_at", "updated_at", "uploaded_at",
-                                    "delivery_report_date"]:
-                            if item.get(key):
-                                item[key] = str(item[key])
-                            # 增加联单费字段
-                        item["union_fee"] = 150 if item.get("delivery_has_delivery_order") == "无" else (
-                                    item.get("delivery_service_fee") or 0)
-                        data.append(item)
+                    if not delivery_ids:
+                        return {"success": True, "data": [], "total": 0, "page": page, "page_size": page_size}
+
+                    # 查询报单详细信息
+                    format_ids = ','.join(['%s'] * len(delivery_ids))
+                    cur.execute(f"""
+                        SELECT d.*,
+                               (SELECT COUNT(*) FROM pd_weighbills WHERE delivery_id = d.id) as total_weighbills,
+                               (SELECT COUNT(*) FROM pd_weighbills WHERE delivery_id = d.id AND upload_status = '已上传') as uploaded_weighbills
+                        FROM pd_deliveries d
+                        WHERE d.id IN ({format_ids})
+                        ORDER BY d.created_at DESC
+                    """, tuple(delivery_ids))
+
+                    delivery_columns = [desc[0] for desc in cur.description]
+                    delivery_rows = cur.fetchall()
+
+                    # 查询这些报单的所有磅单（带筛选条件）
+                    weighbill_where = [f"w.delivery_id IN ({format_ids})"]
+                    weighbill_params = list(delivery_ids)
+
+                    if exact_weigh_date:
+                        weighbill_where.append("w.weigh_date = %s")
+                        weighbill_params.append(exact_weigh_date)
+                    if exact_ocr_status:
+                        weighbill_where.append("w.ocr_status = %s")
+                        weighbill_params.append(exact_ocr_status)
+
+                    weighbill_sql = " AND ".join(weighbill_where)
+
+                    cur.execute(f"""
+                        SELECT w.*, 
+                               d.report_date, d.warehouse, d.target_factory_name,
+                               d.driver_name, d.driver_phone, d.driver_id_card,
+                               d.has_delivery_order, d.shipper, d.payee, d.reporter_name,
+                               d.service_fee
+                        FROM pd_weighbills w
+                        JOIN pd_deliveries d ON w.delivery_id = d.id
+                        WHERE {weighbill_sql}
+                        ORDER BY w.delivery_id, w.product_name
+                    """, tuple(weighbill_params))
+
+                    weighbill_columns = [desc[0] for desc in cur.description]
+                    weighbill_rows = cur.fetchall()
+
+                    # 组织磅单数据
+                    weighbill_map = {}
+                    for row in weighbill_rows:
+                        wb = dict(zip(weighbill_columns, row))
+                        delivery_id = wb['delivery_id']
+
+                        # 转换字段
+                        for key in ["weigh_date", "delivery_time", "created_at", "updated_at", "uploaded_at"]:
+                            if wb.get(key):
+                                wb[key] = str(wb[key])
+                        for key in ["gross_weight", "tare_weight", "net_weight", "unit_price", "total_amount", "service_fee"]:
+                            if wb.get(key):
+                                wb[key] = float(wb[key])
+
+                        wb["is_manual_corrected_display"] = "是" if wb.get("is_manual_corrected") == 1 else "否"
+                        wb["ocr_status_display"] = wb.get("ocr_status", "待上传磅单")
+                        wb["has_delivery_order_display"] = "是" if wb.get("has_delivery_order") == "有" else "否"
+
+                        is_uploaded = wb.get("upload_status") == "已上传" and wb.get("weighbill_image")
+                        wb["operations"] = {
+                            "can_upload": not is_uploaded,
+                            "can_modify": is_uploaded,
+                            "can_view": is_uploaded
+                        }
+
+                        if delivery_id not in weighbill_map:
+                            weighbill_map[delivery_id] = []
+                        weighbill_map[delivery_id].append(wb)
+
+                    # 组装结果
+                    result_data = []
+                    for row in delivery_rows:
+                        delivery = dict(zip(delivery_columns, row))
+
+                        for key in ['report_date', 'created_at', 'updated_at', 'uploaded_at']:
+                            if delivery.get(key):
+                                delivery[key] = str(delivery[key])
+
+                        if delivery.get('products'):
+                            delivery['products'] = [p.strip() for p in delivery['products'].split(',') if p.strip()]
+                        else:
+                            delivery['products'] = [delivery.get('product_name')] if delivery.get('product_name') else []
+
+                        delivery["has_delivery_order_display"] = "是" if delivery.get("has_delivery_order") == "有" else "否"
+                        delivery["upload_status_display"] = "是" if delivery.get("upload_status") == "已上传" else "否"
+                        if delivery.get('service_fee'):
+                            delivery['service_fee'] = float(delivery['service_fee'])
+
+                        delivery_id = delivery['id']
+                        weighbills = weighbill_map.get(delivery_id, [])
+
+                        # 如果没有磅单记录，创建待上传占位
+                        if not weighbills:
+                            for product in delivery.get('products', []):
+                                weighbills.append({
+                                    "id": None,
+                                    "delivery_id": delivery_id,
+                                    "product_name": product,
+                                    "ocr_status": "待上传磅单",
+                                    "ocr_status_display": "待上传磅单",
+                                    "upload_status": "待上传",
+                                    "operations": {"can_upload": True, "can_modify": False, "can_view": False}
+                                })
+
+                        result_data.append({
+                            "delivery_id": delivery_id,
+                            "contract_no": delivery.get("contract_no"),
+                            "report_date": delivery.get("report_date"),
+                            "target_factory_name": delivery.get("target_factory_name"),
+                            "driver_phone": delivery.get("driver_phone"),
+                            "driver_name": delivery.get("driver_name"),
+                            "driver_id_card": delivery.get("driver_id_card"),
+                            "vehicle_no": delivery.get("vehicle_no"),
+                            "has_delivery_order": delivery.get("has_delivery_order"),
+                            "has_delivery_order_display": delivery.get("has_delivery_order_display"),
+                            "upload_status": delivery.get("upload_status"),
+                            "upload_status_display": delivery.get("upload_status_display"),
+                            "shipper": delivery.get("shipper"),
+                            "reporter_name": delivery.get("reporter_name"),
+                            "payee": delivery.get("payee"),
+                            "warehouse": delivery.get("warehouse"),
+                            "service_fee": delivery.get("service_fee"),
+                            "total_weighbills": delivery.get("total_weighbills", 0),
+                            "uploaded_weighbills": delivery.get("uploaded_weighbills", 0),
+                            "weighbills": weighbills
+                        })
 
                     return {
                         "success": True,
-                        "data": data,
+                        "data": result_data,
                         "total": total,
                         "page": page,
                         "page_size": page_size
@@ -732,35 +775,33 @@ class WeighbillService:
             logger.error(f"查询磅单列表失败: {e}")
             return {"success": False, "error": str(e), "data": [], "total": 0}
 
-    def set_payment_schedule_date(self, bill_id: int, payment_schedule_date: str) -> Dict[str, Any]:
+    # ========== 排款日期 ==========
+
+    def set_payment_schedule_date(self, weighbill_id: int, payment_schedule_date: str) -> Dict[str, Any]:
         """设置磅单排款日期"""
         try:
             with get_conn() as conn:
                 with conn.cursor() as cur:
-                    # 检查磅单是否存在
-                    cur.execute("SELECT id FROM pd_weighbills WHERE id = %s", (bill_id,))
+                    cur.execute("SELECT id FROM pd_weighbills WHERE id = %s", (weighbill_id,))
                     if not cur.fetchone():
                         return {"success": False, "error": "磅单不存在"}
 
-                    # 更新排款日期
                     cur.execute("""
                         UPDATE pd_weighbills 
                         SET payment_schedule_date = %s, updated_at = NOW()
                         WHERE id = %s
-                    """, (payment_schedule_date, bill_id))
+                    """, (payment_schedule_date, weighbill_id))
 
                     return {
                         "success": True,
                         "message": "排款日期设置成功",
-                        "data": {
-                            "id": bill_id,
-                            "payment_schedule_date": payment_schedule_date
-                        }
+                        "data": {"id": weighbill_id, "payment_schedule_date": payment_schedule_date}
                     }
 
         except Exception as e:
             logger.error(f"设置排款日期失败: {e}")
             return {"success": False, "error": str(e)}
+
 
 _weighbill_service = None
 

@@ -1,6 +1,7 @@
 """
-磅单管理路由 - OCR识别 + 自动关联 + 手动修正
+磅单管理路由 - 支持一报单多品种（最多4个）
 """
+import logging
 import json
 import os
 import re
@@ -13,18 +14,16 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field, ValidationError
 
 from app.core.paths import TEMP_UPLOADS_DIR, UPLOADS_DIR
-from app.services.balance_service import BalanceService, get_balance_service
-from app.services.contract_service import get_conn
 from app.services.weighbill_service import WeighbillService, get_weighbill_service
-from core.auth import get_current_user  # 添加认证依赖导入
+from app.services.contract_service import get_conn
+from core.auth import get_current_user
 
 router = APIRouter(prefix="/weighbills", tags=["磅单管理"])
-
+logger = logging.getLogger(__name__)
 
 # ============ 请求/响应模型 ============
 
 class WeighbillOCRResponse(BaseModel):
-    # OCR识别原始字段
     weigh_date: Optional[str] = None
     weigh_ticket_no: Optional[str] = None
     contract_no: Optional[str] = None
@@ -36,124 +35,98 @@ class WeighbillOCRResponse(BaseModel):
     delivery_unit: Optional[str] = None
     receive_unit: Optional[str] = None
     ocr_message: str = ""
-
-    # 自动关联填充字段
-    matched_delivery_id: Optional[int] = None
-    warehouse: Optional[str] = None
-    target_factory_name: Optional[str] = None
-    delivery_time: Optional[str] = None
-    driver_name: Optional[str] = None
-    driver_phone: Optional[str] = None
-    driver_id_card: Optional[str] = None
-    match_message: Optional[str] = None
-
-    # 合同价格
-    unit_price: Optional[float] = None
-    total_amount: Optional[float] = None
-    price_message: Optional[str] = None
-
-    # 状态
     ocr_success: bool = True
     raw_text: Optional[str] = None
     ocr_time: float = 0
-
-
-class WeighbillCreateRequest(BaseModel):
-    # 基础信息（可从OCR带过来，也可手动填写）
-    weigh_date: str = Field(..., description="磅单日期")
-    weigh_ticket_no: Optional[str] = Field(None, description="过磅单号")
-    contract_no: Optional[str] = Field(None, description="合同编号")
-    vehicle_no: str = Field(..., description="车牌号")
-    product_name: Optional[str] = Field(None, description="货物名称")
-    gross_weight: Optional[float] = Field(None, description="毛重")
-    tare_weight: Optional[float] = Field(None, description="皮重")
-    net_weight: float = Field(..., description="净重")
-
-    # 关联信息（自动匹配或手动填写）
-    matched_delivery_id: Optional[int] = Field(None, description="关联的报货订单ID")
-    warehouse: Optional[str] = Field(None, description="送货库房")
-    target_factory_name: Optional[str] = Field(None, description="目标工厂")
-    delivery_time: Optional[str] = Field(None, description="送货时间")
-    driver_name: Optional[str] = Field(None, description="司机姓名")
-    driver_phone: Optional[str] = Field(None, description="司机电话")
-    driver_id_card: Optional[str] = Field(None, description="身份证号")
-
-    # 价格信息
-    unit_price: Optional[float] = Field(None, description="合同单价")
-    total_amount: Optional[float] = Field(None, description="总价")
-
-
-class WeighbillUpdateRequest(BaseModel):
-    # 所有字段都可修改
-    weigh_date: Optional[str] = None
-    weigh_ticket_no: Optional[str] = None
-    contract_no: Optional[str] = None
-    vehicle_no: Optional[str] = None
-    product_name: Optional[str] = None
-    gross_weight: Optional[float] = None
-    tare_weight: Optional[float] = None
-    net_weight: Optional[float] = None
+    # 自动填充
     matched_delivery_id: Optional[int] = None
     warehouse: Optional[str] = None
     target_factory_name: Optional[str] = None
-    delivery_time: Optional[str] = None
     driver_name: Optional[str] = None
     driver_phone: Optional[str] = None
     driver_id_card: Optional[str] = None
     unit_price: Optional[float] = None
     total_amount: Optional[float] = None
-    ocr_status: Optional[str] = None
+    match_message: Optional[str] = None
+    price_message: Optional[str] = None
+
+
+class WeighbillUploadRequest(BaseModel):
+    delivery_id: int
+    product_name: str
+    weigh_date: str
+    weigh_ticket_no: Optional[str] = None
+    contract_no: Optional[str] = None
+    vehicle_no: Optional[str] = None
+    gross_weight: Optional[float] = None
+    tare_weight: Optional[float] = None
+    net_weight: float
+    delivery_time: Optional[str] = None
+    unit_price: Optional[float] = None
 
 
 class WeighbillOut(BaseModel):
-    # 磅单基础字段
-    id: int
+    id: Optional[int] = None
+    delivery_id: int
     weigh_date: Optional[str] = None
     delivery_time: Optional[str] = None
     weigh_ticket_no: Optional[str] = None
     contract_no: Optional[str] = None
-    delivery_id: Optional[int] = None
     vehicle_no: Optional[str] = None
-    product_name: Optional[str] = None
+    product_name: str
     gross_weight: Optional[float] = None
     tare_weight: Optional[float] = None
     net_weight: Optional[float] = None
     unit_price: Optional[float] = None
     total_amount: Optional[float] = None
     weighbill_image: Optional[str] = None
-    upload_status: Optional[str] = None  # 磅单上传状态：已上传/待上传
-    ocr_status: str = "待确认"
-    ocr_raw_data: Optional[str] = None
+    upload_status: str = "待上传"
+    ocr_status: str = "待上传磅单"
+    ocr_status_display: str = "待上传磅单"
     is_manual_corrected: int = 0
+    is_manual_corrected_display: str = "否"
     payment_schedule_date: Optional[str] = None
+    payment_schedule_status: Optional[str] = None
     uploader_id: Optional[int] = None
     uploader_name: Optional[str] = None
     uploaded_at: Optional[str] = None
-    created_at: Optional[str] = None
-    updated_at: Optional[str] = None
-
-    # 关联的报货订单（台账）字段
+    # 报单信息
+    report_date: Optional[str] = None
+    warehouse: Optional[str] = None
+    target_factory_name: Optional[str] = None
+    driver_phone: Optional[str] = None
+    driver_name: Optional[str] = None
+    driver_id_card: Optional[str] = None
+    has_delivery_order: Optional[str] = None
+    has_delivery_order_display: str = "否"
     shipper: Optional[str] = None
+    reporter_name: Optional[str] = None
     payee: Optional[str] = None
-    delivery_report_date: Optional[str] = None
-    delivery_warehouse: Optional[str] = None
-    delivery_target_factory_id: Optional[int] = None
-    delivery_target_factory_name: Optional[str] = None
-    delivery_quantity: Optional[float] = None
-    delivery_driver_name: Optional[str] = None
-    delivery_driver_phone: Optional[str] = None
-    delivery_driver_id_card: Optional[str] = None
-    delivery_has_delivery_order: Optional[str] = None
-    delivery_order_image: Optional[str] = None
-    delivery_upload_status: Optional[str] = None  # 新增：联单上传状态（已上传/待上传）
-    delivery_source_type: Optional[str] = None
-    delivery_shipper: Optional[str] = None
-    delivery_payee: Optional[str] = None
-    delivery_service_fee: Optional[float] = None
-    delivery_contract_no: Optional[str] = None
-    delivery_contract_unit_price: Optional[float] = None
-    delivery_total_amount: Optional[float] = None
-    delivery_status: Optional[str] = None
+    service_fee: Optional[float] = None
+    operations: Optional[dict] = None
+
+
+class WeighbillGroupOut(BaseModel):
+    delivery_id: int
+    contract_no: Optional[str] = None
+    report_date: Optional[str] = None
+    target_factory_name: Optional[str] = None
+    driver_phone: Optional[str] = None
+    driver_name: Optional[str] = None
+    driver_id_card: Optional[str] = None
+    vehicle_no: Optional[str] = None
+    has_delivery_order: Optional[str] = None
+    has_delivery_order_display: str = "否"
+    upload_status: Optional[str] = None
+    upload_status_display: str = "否"
+    shipper: Optional[str] = None
+    reporter_name: Optional[str] = None
+    payee: Optional[str] = None
+    warehouse: Optional[str] = None
+    service_fee: Optional[float] = None
+    total_weighbills: int = 0
+    uploaded_weighbills: int = 0
+    weighbills: List[WeighbillOut] = []
 
 
 class PaymentScheduleRequest(BaseModel):
@@ -168,16 +141,7 @@ async def ocr_weighbill(
         auto_match: bool = Query(True, description="是否自动关联匹配"),
         service: WeighbillService = Depends(get_weighbill_service)
 ):
-    """
-    上传磅单图片进行OCR识别
-
-    流程：
-    1. OCR识别磅单关键信息
-    2. 通过日期+车牌号匹配报货订单
-    3. 通过合同编号获取合同单价
-    4. 自动计算总价
-    5. 返回完整数据供用户确认/修正
-    """
+    """OCR识别磅单"""
     allowed_types = ["image/jpeg", "image/jpg", "image/png", "image/bmp"]
     if file.content_type not in allowed_types:
         raise HTTPException(status_code=400, detail="仅支持jpg/png/bmp格式")
@@ -186,17 +150,12 @@ async def ocr_weighbill(
     temp_path.parent.mkdir(parents=True, exist_ok=True)
 
     try:
-        # 保存临时文件
         with open(temp_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
 
-        # 预处理
         processed_path = service.preprocess_image(str(temp_path))
-
-        # OCR识别
         result = service.recognize_weighbill(processed_path)
 
-        # 清理临时文件
         if processed_path != str(temp_path) and os.path.exists(processed_path):
             os.remove(processed_path)
         os.remove(temp_path)
@@ -206,7 +165,6 @@ async def ocr_weighbill(
 
         ocr_data = result["data"]
 
-        # 自动关联匹配
         if auto_match:
             ocr_data = service.auto_fill_data(ocr_data)
 
@@ -220,57 +178,53 @@ async def ocr_weighbill(
         raise HTTPException(status_code=500, detail=f"处理失败: {str(e)}")
 
 
-@router.post("/", response_model=dict)
-async def create_weighbill(
-        request: Optional[WeighbillCreateRequest] = Body(None),
-        request_json: Optional[str] = Form(None, description="磅单数据JSON字符串"),
-        weighbill_image: Optional[UploadFile] = File(None, description="磅单图片（可选，OCR时已传则不用）"),
-        is_manual: bool = Form(True, description="是否人工录入/修正"),
+@router.post("/create", response_model=dict)
+async def upload_weighbill(
+        delivery_id: int = Form(..., description="报单ID"),
+        product_name: str = Form(..., description="品种名称"),
+        weigh_date: str = Form(..., description="磅单日期"),
+        weigh_ticket_no: Optional[str] = Form(None, description="过磅单号"),
+        contract_no: Optional[str] = Form(None, description="合同编号"),
+        vehicle_no: Optional[str] = Form(None, description="车牌号"),
+        gross_weight: Optional[float] = Form(None, description="毛重"),
+        tare_weight: Optional[float] = Form(None, description="皮重"),
+        net_weight: float = Form(..., description="净重"),
+        delivery_time: Optional[str] = Form(None, description="送货时间"),
+        unit_price: Optional[float] = Form(None, description="单价（不传则自动获取）"),
+        is_manual: bool = Form(False, description="是否人工修正"),
+        weighbill_image: UploadFile = File(..., description="磅单图片"),
         service: WeighbillService = Depends(get_weighbill_service),
-        current_user: dict = Depends(get_current_user)  # 添加认证依赖获取当前用户
+        current_user: dict = Depends(get_current_user)
 ):
-    """
-    保存磅单（OCR后确认保存，或纯手动录入）
-
-    - OCR识别后：用户确认无误，提交保存
-    - 纯手动：直接填写所有字段保存
-    """
+    """上传磅单（按品种上传）"""
     try:
-        if request is None:
-            if not request_json:
-                raise HTTPException(status_code=422, detail="缺少磅单数据")
-            try:
-                request = WeighbillCreateRequest(**json.loads(request_json))
-            except json.JSONDecodeError as exc:
-                raise HTTPException(status_code=400, detail=f"request_json不是合法JSON: {exc.msg}")
-            except ValidationError as exc:
-                raise HTTPException(status_code=422, detail=exc.errors())
+        # 自动获取单价
+        final_unit_price = unit_price
+        if not final_unit_price and contract_no and product_name:
+            final_unit_price = service.get_contract_price_by_product(contract_no, product_name)
 
-        data = request.dict()
+        data = {
+            "weigh_date": weigh_date,
+            "weigh_ticket_no": weigh_ticket_no,
+            "contract_no": contract_no,
+            "vehicle_no": vehicle_no,
+            "gross_weight": gross_weight,
+            "tare_weight": tare_weight,
+            "net_weight": net_weight,
+            "delivery_time": delivery_time,
+            "unit_price": final_unit_price,
+        }
 
-        # 如果没有总价但有单价和净重，自动计算
-        if not data.get("total_amount") and data.get("unit_price") and data.get("net_weight"):
-            data["total_amount"] = round(data["unit_price"] * data["net_weight"], 2)
+        image_bytes = await weighbill_image.read()
 
-        # 处理图片
-        image_path = None
-        if weighbill_image:
-            file_ext = Path(weighbill_image.filename).suffix.lower() or ".jpg"
-            safe_name = re.sub(r'[^\w\-]', '_', data.get("vehicle_no", "unknown"))
-            filename = f"weighbill_{safe_name}_{data.get('weigh_date', 'unknown')}{file_ext}"
-            file_path = UPLOADS_DIR / "weighbills" / filename
-
-            # 确保目录存在
-            file_path.parent.mkdir(parents=True, exist_ok=True)
-
-            # 保存图片
-            with open(file_path, "wb") as buffer:
-                shutil.copyfileobj(weighbill_image.file, buffer)
-
-            image_path = str(file_path)
-
-        # 保存到数据库，传递当前用户
-        result = service.create_weighbill(data, image_path, is_manual, current_user)
+        result = service.upload_weighbill(
+            delivery_id=delivery_id,
+            product_name=product_name,
+            data=data,
+            image_file=image_bytes,
+            current_user=current_user,
+            is_manual=is_manual
+        )
 
         if result["success"]:
             return result
@@ -283,96 +237,64 @@ async def create_weighbill(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/", response_model=dict)
-async def list_weighbills(
-        exact_status: Optional[str] = Query(None, description="精确状态：待确认/已确认/已修正"),
-        exact_vehicle_no: Optional[str] = Query(None, description="精确车牌号"),
-        exact_contract_no: Optional[str] = Query(None, description="精确合同编号"),
-        fuzzy_keywords: Optional[str] = Query(None, description="模糊关键词（空格分隔）"),
-        date_from: Optional[str] = Query(None, description="开始日期"),
-        date_to: Optional[str] = Query(None, description="结束日期"),
-        page: int = Query(1, ge=1),
-        page_size: int = Query(20, ge=1, le=100),
-        service: WeighbillService = Depends(get_weighbill_service)
+@router.put("/modify", response_model=dict)
+async def modify_weighbill(
+        weighbill_id: int = Form(..., description="磅单ID"),
+        weigh_date: Optional[str] = Form(None, description="磅单日期"),
+        weigh_ticket_no: Optional[str] = Form(None, description="过磅单号"),
+        contract_no: Optional[str] = Form(None, description="合同编号"),
+        vehicle_no: Optional[str] = Form(None, description="车牌号"),
+        gross_weight: Optional[float] = Form(None, description="毛重"),
+        tare_weight: Optional[float] = Form(None, description="皮重"),
+        net_weight: Optional[float] = Form(None, description="净重"),
+        delivery_time: Optional[str] = Form(None, description="送货时间"),
+        unit_price: Optional[float] = Form(None, description="单价"),
+        is_manual: bool = Form(True, description="是否人工修正"),
+        weighbill_image: Optional[UploadFile] = File(None, description="新的磅单图片（可选）"),
+        service: WeighbillService = Depends(get_weighbill_service),
+        current_user: dict = Depends(get_current_user)
 ):
-    """查询磅单列表"""
+    """修改磅单（支持修改信息和图片）"""
     try:
-        return service.list_weighbills(
-            exact_status=exact_status,
-            exact_vehicle_no=exact_vehicle_no,
-            exact_contract_no=exact_contract_no,
-            fuzzy_keywords=fuzzy_keywords,
-            date_from=date_from,
-            date_to=date_to,
-            page=page,
-            page_size=page_size,
+        existing = service.get_weighbill(weighbill_id)
+        if not existing:
+            raise HTTPException(status_code=404, detail="磅单不存在")
+
+        # 构建更新数据
+        data = {}
+        fields = ['weigh_date', 'weigh_ticket_no', 'contract_no', 'vehicle_no',
+                  'gross_weight', 'tare_weight', 'net_weight', 'delivery_time', 'unit_price']
+
+        for f in fields:
+            value = locals().get(f)
+            if value is not None:
+                data[f] = value
+
+        if not data and not weighbill_image:
+            raise HTTPException(status_code=400, detail="没有要修改的字段")
+
+        # 自动获取单价
+        final_product = existing.get('product_name')
+        final_contract = data.get('contract_no') or existing.get('contract_no')
+
+        if 'unit_price' not in data and final_contract and final_product:
+            data['unit_price'] = service.get_contract_price_by_product(final_contract, final_product)
+
+        image_bytes = None
+        if weighbill_image:
+            image_bytes = await weighbill_image.read()
+
+        result = service.upload_weighbill(
+            delivery_id=existing.get('delivery_id'),
+            product_name=final_product,
+            data=data,
+            image_file=image_bytes,
+            current_user=current_user,
+            is_manual=True
         )
 
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.get("/{bill_id}", response_model=WeighbillOut)
-async def get_weighbill(
-        bill_id: int,
-        service: WeighbillService = Depends(get_weighbill_service)
-):
-    """查看磅单详情"""
-    bill = service.get_weighbill(bill_id)
-    if not bill:
-        raise HTTPException(status_code=404, detail="磅单不存在")
-    return bill
-
-
-@router.delete("/{bill_id}")
-async def delete_weighbill(
-        bill_id: int,
-        service: WeighbillService = Depends(get_weighbill_service)
-):
-    """删除磅单"""
-    try:
-        # 获取图片路径
-        bill = service.get_weighbill(bill_id)
-        if bill and bill.get("weighbill_image") and os.path.exists(bill["weighbill_image"]):
-            os.remove(bill["weighbill_image"])
-
-        with get_conn() as conn:
-            with conn.cursor() as cur:
-                cur.execute("DELETE FROM pd_weighbills WHERE id = %s", (bill_id,))
-
-        return {"success": True, "message": "删除成功"}
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.post("/{bill_id}/confirm")
-async def confirm_weighbill(
-        bill_id: int,
-        service: WeighbillService = Depends(get_weighbill_service),
-        balance_service: BalanceService = Depends(get_balance_service)
-):
-    """
-    确认磅单（OCR识别后确认无误）
-
-    确认后：
-    - 更新报货订单状态
-    - 触发后续流程（如结算）
-    """
-    try:
-        result = service.confirm_weighbill(bill_id)
-
         if result["success"]:
-            balance_result = balance_service.generate_balance_details(weighbill_id=bill_id)
-            if not balance_result.get("success"):
-                raise HTTPException(status_code=400, detail=balance_result.get("error", "结余明细生成失败"))
-
-            return {
-                "success": True,
-                "message": "磅单已确认",
-                "balance_generated": len(balance_result.get("data", [])),
-                "balance_message": balance_result.get("message"),
-            }
+            return {"success": True, "message": "磅单修改成功", "data": result.get("data")}
         else:
             raise HTTPException(status_code=400, detail=result.get("error"))
 
@@ -382,53 +304,115 @@ async def confirm_weighbill(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/match/delivery")
-async def match_delivery(
-        weigh_date: str = Query(..., description="磅单日期"),
-        vehicle_no: str = Query(..., description="车牌号"),
+@router.get("/", response_model=dict)
+async def list_weighbills(
+    exact_shipper: Optional[str] = Query(None, description="精确发货人/报单人"),
+    exact_contract_no: Optional[str] = Query(None, description="精确合同编号"),
+    exact_report_date: Optional[str] = Query(None, description="精确报单日期"),
+    exact_driver_name: Optional[str] = Query(None, description="精确司机姓名"),
+    exact_vehicle_no: Optional[str] = Query(None, description="精确车号"),
+    exact_weigh_date: Optional[str] = Query(None, description="精确磅单日期"),
+    exact_ocr_status: Optional[str] = Query(None, description="精确磅单状态：待上传磅单/已上传磅单"),
+        page: int = Query(1, ge=1),
+        page_size: int = Query(20, ge=1, le=100),
         service: WeighbillService = Depends(get_weighbill_service)
 ):
     """
-    手动匹配报货订单
+    查询磅单列表（按报单ID分组）
 
-    当自动匹配失败时，提供手动匹配接口
-    """
-    delivery = service.match_delivery_info(weigh_date, vehicle_no)
-    if delivery:
-        # 转换时间格式
-        for key in ["report_date", "created_at", "updated_at"]:
-            if delivery.get(key):
-                delivery[key] = str(delivery[key])
-        return {"success": True, "data": delivery, "matched": True}
-    else:
-        return {"success": True, "data": None, "matched": False, "message": "未找到匹配的报货订单"}
-
-
-@router.get("/contract/price")
-async def get_contract_price(
-        contract_no: str = Query(..., description="合同编号"),
-        product_name: str = Query("", description="产品名称"),
-        service: WeighbillService = Depends(get_weighbill_service)
-):
-    """手动获取合同单价"""
-    price = service.get_contract_price(contract_no, product_name)
-    if price:
-        return {"success": True, "unit_price": price}
-    else:
-        return {"success": False, "message": "未找到合同或价格信息"}
-
-
-@router.get("/{bill_id}/image")
-async def get_weighbill_image(
-        bill_id: int,
-        service: WeighbillService = Depends(get_weighbill_service)
-):
-    """
-    查看磅单图片
-    直接返回图片文件
+    表头：合同编号、报单日期、报送冶炼厂、司机电话、司机姓名、司机身份证号、
+          车牌号、品种、是否自带联单、是否上传联单、报单人/发货人、收款人、送货库房、
+          磅单日期、过磅单号、毛重、皮重、净重、单价、金额、磅单状态、磅单图片、
+          人工修正、送货时间、操作
     """
     try:
-        bill = service.get_weighbill(bill_id)
+        return service.list_weighbills_grouped(
+            exact_shipper=exact_shipper,
+            exact_contract_no=exact_contract_no,
+            exact_report_date=exact_report_date,
+            exact_driver_name=exact_driver_name,
+            exact_vehicle_no=exact_vehicle_no,
+            exact_weigh_date=exact_weigh_date,
+            exact_ocr_status=exact_ocr_status,
+            page=page,
+            page_size=page_size,
+        )
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/{weighbill_id}", response_model=WeighbillOut)
+async def get_weighbill(
+        weighbill_id: int,
+        service: WeighbillService = Depends(get_weighbill_service)
+):
+    """查看磅单详情"""
+    bill = service.get_weighbill(weighbill_id)
+    if not bill:
+        raise HTTPException(status_code=404, detail="磅单不存在")
+    return bill
+
+
+@router.get("/delivery/{delivery_id}", response_model=WeighbillGroupOut)
+async def get_weighbills_by_delivery(
+        delivery_id: int,
+        service: WeighbillService = Depends(get_weighbill_service)
+):
+    """获取指定报单的所有磅单"""
+    try:
+        result = service.list_weighbills_grouped(
+            exact_delivery_id=delivery_id,
+            page=1,
+            page_size=100
+        )
+        if result.get("success") and result.get("data"):
+            return result["data"][0]
+        raise HTTPException(status_code=404, detail="报单不存在或无磅单记录")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/{weighbill_id}")
+async def delete_weighbill(
+        weighbill_id: int,
+        service: WeighbillService = Depends(get_weighbill_service)
+):
+    """删除磅单"""
+    try:
+        bill = service.get_weighbill(weighbill_id)
+        if not bill:
+            raise HTTPException(status_code=404, detail="磅单不存在")
+
+        image_path = bill.get("weighbill_image")
+        if image_path and os.path.exists(image_path):
+            try:
+                os.remove(image_path)
+            except Exception as e:
+                logger.warning(f"删除磅单图片失败: {e}")
+
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM pd_weighbills WHERE id = %s", (weighbill_id,))
+
+        return {"success": True, "message": "磅单删除成功"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/{weighbill_id}/image")
+async def get_weighbill_image(
+        weighbill_id: int,
+        service: WeighbillService = Depends(get_weighbill_service)
+):
+    """查看磅单图片"""
+    try:
+        bill = service.get_weighbill(weighbill_id)
         if not bill:
             raise HTTPException(status_code=404, detail="磅单不存在")
 
@@ -442,7 +426,7 @@ async def get_weighbill_image(
         return FileResponse(
             path=image_path,
             media_type="image/jpeg",
-            filename=f"weighbill_{bill.get('weigh_ticket_no') or bill_id}.jpg"
+            filename=f"weighbill_{weighbill_id}_{bill.get('product_name', '')}.jpg"
         )
 
     except HTTPException:
@@ -451,15 +435,15 @@ async def get_weighbill_image(
         raise HTTPException(status_code=500, detail=f"获取图片失败: {str(e)}")
 
 
-@router.put("/{bill_id}/payment-schedule", response_model=dict)
+@router.put("/{weighbill_id}/payment-schedule", response_model=dict)
 async def set_payment_schedule(
-        bill_id: int,
+        weighbill_id: int,
         request: PaymentScheduleRequest,
         service: WeighbillService = Depends(get_weighbill_service)
 ):
     """设置磅单排款日期"""
     try:
-        result = service.set_payment_schedule_date(bill_id, request.payment_schedule_date)
+        result = service.set_payment_schedule_date(weighbill_id, request.payment_schedule_date)
 
         if result["success"]:
             return result
