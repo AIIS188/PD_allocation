@@ -114,6 +114,15 @@ class PaymentReceiptDetailOut(PaymentReceiptListOut):
     ocr_raw_data: Optional[str] = None
     settlements: Optional[List[Dict]] = None
 
+
+class PaymentReceiptListResp(BaseModel):
+    """支付回单列表响应"""
+    success: bool
+    data: List[PaymentReceiptListOut]
+    total: int
+    page: int
+    page_size: int
+
 class PayeeSummaryOut(BaseModel):
     """收款人汇总响应模型"""
     payee_name: str
@@ -378,7 +387,7 @@ async def get_payment_receipt(
     return receipt
 
 
-@router.get("/payment-receipts", response_model=dict)
+@router.get("/payment-receipts", response_model=PaymentReceiptListResp)
 async def list_payment_receipts(
         exact_payee_name: Optional[str] = Query(None, description="精确收款人姓名"),
         exact_ocr_status: Optional[int] = Query(None, ge=0, le=2, description="状态：0待确认/1已确认/2已核销"),

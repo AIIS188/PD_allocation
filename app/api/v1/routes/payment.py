@@ -164,6 +164,14 @@ class PaymentResp(BaseModel):
     delivery_uploaded_at: Optional[str] = None
 
 
+class PaymentListResp(BaseModel):
+    """收款明细列表响应"""
+    total: int
+    page: int
+    size: int
+    items: List[PaymentResp]
+
+
 class PaymentRecordResp(BaseModel):
     """回款记录响应"""
     id: int
@@ -356,7 +364,7 @@ def create_payment_detail(
         raise HTTPException(status_code=500, detail="创建收款明细失败")
 
 
-@router.get("/details", summary="收款明细列表", response_model=dict)
+@router.get("/details", summary="收款明细列表", response_model=PaymentListResp)
 def list_payment_details(
     page: int = Query(1, ge=1, description="页码"),
     size: int = Query(20, ge=1, le=100, description="每页数量"),

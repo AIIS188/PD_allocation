@@ -126,6 +126,7 @@ class WeighbillOut(BaseModel):
     ocr_raw_data: Optional[str] = None
     is_manual_corrected: int = 0
     payment_schedule_date: Optional[str] = None
+    payment_schedule_status: Optional[str] = None
     uploader_id: Optional[int] = None
     uploader_name: Optional[str] = None
     uploaded_at: Optional[str] = None

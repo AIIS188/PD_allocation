@@ -715,9 +715,10 @@ class WeighbillService:
                                     "delivery_report_date"]:
                             if item.get(key):
                                 item[key] = str(item[key])
-                            # 增加联单费字段
+                        # 增加联单费字段
                         item["union_fee"] = 150 if item.get("delivery_has_delivery_order") == "无" else (
                                     item.get("delivery_service_fee") or 0)
+                        item["payment_schedule_status"] = "已排期" if item.get("payment_schedule_date") else "待排期"
                         data.append(item)
 
                     return {
