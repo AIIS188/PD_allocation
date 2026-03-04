@@ -1,4 +1,6 @@
+from dotenv import load_dotenv
 import os
+load_dotenv()
 import time
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -7,7 +9,6 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 import sys
 import uvicorn
-from dotenv import load_dotenv
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger

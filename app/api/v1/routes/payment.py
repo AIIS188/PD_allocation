@@ -54,6 +54,7 @@ class RecordPaymentReq(BaseModel):
     """录入回款请求"""
     model_config = ConfigDict(json_schema_extra={
         "example": {
+            "payment_detail_id": 1,
             "payment_amount": 1356750.00,
             "payment_stage": 1,
             "payment_date": "2025-02-24",
@@ -63,6 +64,7 @@ class RecordPaymentReq(BaseModel):
         }
     })
 
+    payment_detail_id: int = Field(..., gt=0, description="收款明细ID")
     payment_amount: float = Field(..., gt=0, description="回款金额")
     payment_stage: PaymentStageEnum = Field(PaymentStageEnum.DELIVERY, description="回款阶段：0-定金, 1-到货款(90%), 2-尾款(10%)")
     payment_date: Optional[date] = Field(None, description="回款日期，默认今天")
@@ -115,6 +117,11 @@ class PaymentResp(BaseModel):
     remark: Optional[str]
     created_at: datetime
     updated_at: datetime
+
+    # 是否回款状态（计算字段：已回款金额 > 0 则为是）
+    is_paid: Optional[int] = Field(None, description="是否回款：0-否, 1-是")
+    # 是否支付状态（计算字段：从磅单或关联表获取）
+    is_paid_out: Optional[int] = Field(None, description="是否支付：0-否, 1-是")
 
     # 磅单字段
     weighbill_id: Optional[int] = None
@@ -302,19 +309,6 @@ def check_admin_or_finance_permission(current_user: dict):
         raise HTTPException(status_code=403, detail="权限不足，需要管理员或财务权限")
 
 
-def _parse_optional_int(value: Optional[str], default: int) -> int:
-    """Parse optional int query params, treating empty/None as default."""
-    if value is None:
-        return default
-    value = value.strip()
-    if not value:
-        return default
-    try:
-        return int(value)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail="参数格式错误") from exc
-
-
 # ========== 收款明细管理接口 ==========
 
 @router.post("/details", summary="创建收款明细", response_model=dict)
@@ -471,14 +465,16 @@ def delete_payment_detail(
     except Exception as e:
         logger.exception("删除收款明细异常")
         raise HTTPException(status_code=500, detail="删除失败")
-    
+
+
+# ========== 合同发运进度接口（静态路由放在动态路由之前） ==========
 
 @router.get("/contracts/shipping-progress", summary="合同发运进度列表", response_model=dict)
 def list_contract_shipping_progress(
     contract_no: Optional[str] = Query(None, description="合同编号筛选"),
     smelter_name: Optional[str] = Query(None, description="冶炼厂名称筛选"),
-    page: Optional[str] = Query(None, description="页码"),
-    size: Optional[str] = Query(None, description="每页数量"),
+    page: int = Query(1, ge=1, description="页码"),
+    size: int = Query(20, ge=1, le=100, description="每页数量"),
     current_user: dict = Depends(get_current_user)
 ):
     """
@@ -498,8 +494,8 @@ def list_contract_shipping_progress(
         result = PaymentService.get_contract_shipping_progress(
             contract_no=contract_no,
             smelter_name=smelter_name,
-            page=_parse_optional_int(page, 1),
-            size=_parse_optional_int(size, 20)
+            page=page,
+            size=size
         )
         return {
             "msg": "查询成功",
@@ -510,15 +506,15 @@ def list_contract_shipping_progress(
         raise HTTPException(status_code=500, detail="查询失败")
 
 
-# ========== 合同回款汇总接口 ==========
+# ========== 合同回款汇总接口（静态路由放在动态路由之前） ==========
 
 @router.get("/contracts/payment-summary", summary="合同回款汇总列表", response_model=dict)
 def list_contract_payment_summary(
     contract_no: Optional[str] = Query(None, description="合同编号筛选"),
     smelter_name: Optional[str] = Query(None, description="冶炼厂名称筛选"),
-    status: Optional[str] = Query(None, description="状态筛选"),
-    page: Optional[str] = Query(None, description="页码"),
-    size: Optional[str] = Query(None, description="每页数量"),
+    status: Optional[int] = Query(None, ge=0, le=3, description="状态筛选"),
+    page: int = Query(1, ge=1, description="页码"),
+    size: int = Query(20, ge=1, le=100, description="每页数量"),
     current_user: dict = Depends(get_current_user)
 ):
     """
@@ -536,15 +532,12 @@ def list_contract_payment_summary(
     check_finance_permission(current_user)
     
     try:
-        parsed_status = None
-        if status is not None and status.strip() != "":
-            parsed_status = _parse_optional_int(status, 0)
         result = PaymentService.get_contract_payment_summary(
             contract_no=contract_no,
             smelter_name=smelter_name,
-            status=parsed_status,
-            page=_parse_optional_int(page, 1),
-            size=_parse_optional_int(size, 20)
+            status=status,
+            page=page,
+            size=size
         )
         return {
             "msg": "查询成功",
@@ -555,7 +548,7 @@ def list_contract_payment_summary(
         raise HTTPException(status_code=500, detail="查询失败")
 
 
-# ========== 合同回款明细接口 ==========
+# ========== 合同回款明细接口（动态路由放在静态路由之后） ==========
 
 @router.get("/contracts/{contract_no}/payment-details", summary="合同回款明细", response_model=dict)
 def get_contract_payment_details(
