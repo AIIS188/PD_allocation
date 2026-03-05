@@ -246,6 +246,8 @@ class DeliveryService:
         temp_file_path = None
 
         try:
+            driver_phone = data.get('driver_phone') if data else None
+            driver_id_card = data.get('driver_id_card') if data else None
             # 参数防御性检查
             if data is None:
                 return {"success": False, "error": "请求数据不能为空"}
