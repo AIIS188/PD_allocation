@@ -6,6 +6,7 @@ import mimetypes
 import os
 import re
 import shutil
+from decimal import Decimal
 from pathlib import Path
 from typing import List, Optional, Dict
 from fastapi.responses import FileResponse
@@ -13,6 +14,7 @@ from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, Query, 
 from pydantic import BaseModel, Field, ValidationError
 
 from app.services.balance_service import BalanceService, get_balance_service, UPLOAD_DIR
+from app.services.contract_service import get_conn
 
 router = APIRouter(prefix="/balances", tags=["磅单结余管理"])
 
@@ -213,36 +215,118 @@ async def list_balances(
 async def list_balances_grouped(
         exact_contract_no: Optional[str] = Query(None, description="精确合同编号"),
         exact_driver_name: Optional[str] = Query(None, description="精确司机姓名"),
-        fuzzy_keywords: Optional[str] = Query(None, description="模糊关键词（空格分隔）"),
-        payment_status: Optional[int] = Query(None, description="0=待支付, 1=部分支付, 2=已结清"),
+        fuzzy_keywords: Optional[str] = Query(None, description="模糊关键词（收款人/合同/司机/电话/车牌）"),
+        payment_status: Optional[int] = Query(None, description="支付状态：0=待支付, 1=部分支付, 2=已结清"),
+        payout_status: Optional[int] = Query(None, description="打款状态：0=待打款, 1=已打款"),
+        schedule_status: Optional[int] = Query(None, description="排期状态：0=待排期, 1=已排期"),
+        date_from: Optional[str] = Query(None, description="排款日期开始"),
+        date_to: Optional[str] = Query(None, description="排款日期结束"),
         page: int = Query(1, ge=1),
         page_size: int = Query(20, ge=1, le=100),
         service: BalanceService = Depends(get_balance_service)
 ):
     """
-    查询结余明细列表（按报单分组，包含完整关联信息）
+    打款信息列表（按报单分组）
 
-    返回结构：
-    - 按报单ID分组，每组包含完整报单信息
-    - 每组包含结余统计（总应付/总已付/总结余/各状态笔数）
-    - 每组包含结余明细列表，每条明细包含：
-      * 结余基础信息（金额、状态、排期等）
-      * 关联磅单完整信息（重量、图片等）
-      * 关联支付回单列表（核销记录）
-      * 操作权限
+    表头字段：
+    - 排款日期、合同编号、报单日期、报送冶炼厂
+    - 司机电话、司机姓名、车号、身份证号
+    - 品种、是否自带联单、是否上传联单
+    - 报单人/发货人（大区经理、仓库）
+    - 磅单日期、过磅单号、净重、采购单价
+    - 联单费、应打款金额、已打款金额
+    - 收款人、收款人账号
+    - 打款状态（已打款、待打款）
+    - 回款状态（待回款/已回首笔待回尾款/已回尾款）
+    - 操作
+
+    查询条件支持收款人、合同编号、报单日期、司机姓名、车号、磅单日期、支款日期、打款状态
     """
     result = service.list_balance_details_grouped(
-        exact_contract_no,
-        exact_driver_name,
-        fuzzy_keywords,
-        payment_status,
-        page,
-        page_size,
+        exact_contract_no=exact_contract_no,
+        exact_driver_name=exact_driver_name,
+        fuzzy_keywords=fuzzy_keywords,
+        payment_status=payment_status,
+        payout_status=payout_status,
+        schedule_status=schedule_status,
+        date_from=date_from,
+        date_to=date_to,
+        page=page,
+        page_size=page_size,
     )
     if result["success"]:
         return result
     else:
         raise HTTPException(status_code=400, detail=result.get("error"))
+
+
+@router.put("/{balance_id}/payment", response_model=dict)
+async def update_balance_payment(
+        balance_id: int,
+        paid_amount: float = Form(..., description="已打款金额"),
+        payout_status: int = Form(..., description="打款状态：0=待打款, 1=已打款"),
+        service: BalanceService = Depends(get_balance_service)
+):
+    """
+    编辑打款信息
+    修改已打款金额和打款状态
+    """
+    try:
+        result = service.recalculate_balance(balance_id)
+        if not result["success"]:
+            raise HTTPException(status_code=404, detail="结余明细不存在")
+
+        # 更新打款信息
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    UPDATE pd_balance_details 
+                    SET paid_amount = %s, payout_status = %s, updated_at = NOW()
+                    WHERE id = %s
+                """, (paid_amount, payout_status, balance_id))
+
+                # 重新计算结余金额和支付状态
+                cur.execute("""
+                    SELECT payable_amount, paid_amount 
+                    FROM pd_balance_details 
+                    WHERE id = %s
+                """, (balance_id,))
+                row = cur.fetchone()
+                if row:
+                    payable, paid = Decimal(str(row[0])), Decimal(str(row[1]))
+                    balance = payable - paid
+
+                    # 确定支付状态
+                    if paid <= 0:
+                        payment_status = 0  # 待支付
+                    elif paid >= payable:
+                        payment_status = 2  # 已结清
+                    else:
+                        payment_status = 1  # 部分支付
+
+                    cur.execute("""
+                        UPDATE pd_balance_details 
+                        SET balance_amount = %s, payment_status = %s 
+                        WHERE id = %s
+                    """, (balance, payment_status, balance_id))
+
+        return {
+            "success": True,
+            "message": "打款信息更新成功",
+            "data": {
+                "id": balance_id,
+                "paid_amount": paid_amount,
+                "payout_status": payout_status,
+                "payout_status_name": "已打款" if payout_status == 1 else "待打款"
+            }
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"更新失败: {str(e)}")
+
+
 @router.post("/payment-receipts/ocr", response_model=PaymentReceiptOCRResponse)
 async def ocr_payment_receipt(
         file: UploadFile = File(..., description="支付回单图片"),

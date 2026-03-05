@@ -99,7 +99,7 @@ async def create_delivery(
         warehouse: Optional[str] = Form(None),
         target_factory_id: Optional[int] = Form(None),
         target_factory_name: str = Form(...),
-        product_name: str = Form(..., description="主品种，我改不掉"),
+        product_name: str = Form(..., description="主品种，随便填"),
         products: Optional[str] = Form(None, description="品种列表，逗号分隔，最多4个，用于计算品种数量"),
         quantity: float = Form(...),
         vehicle_no: str = Form(...),

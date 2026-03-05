@@ -2,9 +2,10 @@ from dotenv import load_dotenv
 import os
 load_dotenv()
 import time
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.security import HTTPBearer
 from contextlib import asynccontextmanager
 from pathlib import Path
 import sys
@@ -21,11 +22,6 @@ from app.api.v1.user.routes import register_pd_auth_routes
 from app.core.logging import get_logger, reset_log_user, set_log_user, setup_logging
 from core.auth import get_user_identity_from_authorization
 from app.services.contract_service import expire_contracts_after_grace
-# from fastapi.middleware.cors import CORSMiddleware
-#
-#
-# from api.user.routes import register_routes as register_user_routes
-#
 
 
 @asynccontextmanager
@@ -55,6 +51,10 @@ async def lifespan(app: FastAPI):
     print("应用关闭")
 
 
+# ========== 只添加这行 ==========
+security = HTTPBearer(auto_error=False)
+
+
 app = FastAPI(
     title=settings.app_name,
     version="0.1.0",
@@ -69,16 +69,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-# app = FastAPI(
-#     title="综合管理系统API",
-#     description="财务管理系统 + 用户中心 + 订单系统 + 商品管理",
-#     version="1.0.0",
-#     docs_url="/docs",  # 自定义 docs 路由以支持搜索过滤
-#     redoc_url="/redoc",  # ReDoc 文档地址
-#     openapi_url="/openapi.json",  # OpenAPI Schema 地址
-#     default_response_class=DecimalJSONResponse
-# )
-app.include_router(api_router, prefix="/api/v1")
+
+# ========== 只添加 dependencies ==========
+app.include_router(api_router, prefix="/api/v1", dependencies=[Depends(security)])
 register_pd_auth_routes(app)
 logger = get_logger("app")
 
@@ -116,8 +109,6 @@ async def request_logger(request: Request, call_next):
 
     return response
 
-
-# register_user_routes(app)
 
 @app.get("/healthz")
 def health_check() -> dict:

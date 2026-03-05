@@ -1266,10 +1266,15 @@ class BalanceService:
                                      exact_driver_name: str = None,
                                      fuzzy_keywords: str = None,
                                      payment_status: int = None,
+                                     payout_status: int = None,
+                                     schedule_status: int = None,
+                                     date_from: str = None,
+                                     date_to: str = None,
                                      page: int = 1,
                                      page_size: int = 20) -> Dict[str, Any]:
         """
         查询结余明细列表（按报单分组，包含完整关联信息）
+        支持已排期和未排期的所有信息
         """
         try:
             with get_conn() as conn:
@@ -1284,24 +1289,36 @@ class BalanceService:
                     if exact_driver_name:
                         conditions.append("b.driver_name = %s")
                         params.append(exact_driver_name)
+                    if payment_status is not None:
+                        conditions.append("b.payment_status = %s")
+                        params.append(payment_status)
+                    if payout_status is not None:
+                        conditions.append("b.payout_status = %s")
+                        params.append(payout_status)
+                    if schedule_status is not None:
+                        conditions.append("b.schedule_status = %s")
+                        params.append(schedule_status)
+                    if date_from:
+                        conditions.append("b.schedule_date >= %s")
+                        params.append(date_from)
+                    if date_to:
+                        conditions.append("b.schedule_date <= %s")
+                        params.append(date_to)
                     if fuzzy_keywords:
                         tokens = [t for t in fuzzy_keywords.split() if t]
                         or_clauses = []
                         for token in tokens:
                             like = f"%{token}%"
                             or_clauses.append(
-                                "(b.contract_no LIKE %s OR b.driver_name LIKE %s OR b.driver_phone LIKE %s OR b.vehicle_no LIKE %s)"
+                                "(b.contract_no LIKE %s OR b.driver_name LIKE %s OR b.driver_phone LIKE %s OR b.vehicle_no LIKE %s OR b.payee_name LIKE %s)"
                             )
-                            params.extend([like, like, like, like])
+                            params.extend([like, like, like, like, like])
                         if or_clauses:
                             conditions.append("(" + " OR ".join(or_clauses) + ")")
-                    if payment_status is not None:
-                        conditions.append("b.payment_status = %s")
-                        params.append(payment_status)
 
                     where_sql = " AND ".join(conditions)
 
-                    # 查询报单分组总数（去重delivery_id）
+                    # 查询报单分组总数
                     cur.execute(f"""
                         SELECT COUNT(DISTINCT b.delivery_id) 
                         FROM pd_balance_details b
@@ -1312,13 +1329,15 @@ class BalanceService:
                     # 分页查询报单ID列表
                     offset = (page - 1) * page_size
                     cur.execute(f"""
-                        SELECT DISTINCT b.delivery_id, b.created_at
+                        SELECT DISTINCT b.delivery_id, MAX(b.created_at) as max_created_at
                         FROM pd_balance_details b
                         WHERE {where_sql}
-                        ORDER BY b.created_at DESC
+                        GROUP BY b.delivery_id
+                        ORDER BY max_created_at DESC
                         LIMIT %s OFFSET %s
                     """, tuple(params + [page_size, offset]))
-                    delivery_ids = [row[0] for row in cur.fetchall()]
+                    delivery_rows = cur.fetchall()
+                    delivery_ids = [row[0] for row in delivery_rows] if delivery_rows else []
 
                     if not delivery_ids:
                         return {
@@ -1370,7 +1389,7 @@ class BalanceService:
                     balance_rows = cur.fetchall()
 
                     # 查询结余明细关联的回单信息
-                    balance_ids = [row[0] for row in balance_rows]  # b.id 是第一列
+                    balance_ids = [row[0] for row in balance_rows]
                     receipts_map = {}
                     if balance_ids:
                         format_balance_ids = ','.join(['%s'] * len(balance_ids))
@@ -1417,10 +1436,16 @@ class BalanceService:
                             })
 
                     # 组装结余明细数据
-                    balance_map = {}  # delivery_id -> [balance_items]
+                    balance_map = {}
                     status_map = {0: "待支付", 1: "部分支付", 2: "已结清"}
                     payout_map = {0: "待打款", 1: "已打款"}
                     schedule_map = {0: "待排期", 1: "已排期"}
+                    # 回款状态映射
+                    collection_map = {
+                        0: "待回款",  # 已上传磅单，默认待回款
+                        1: "已回首笔待回尾款",  # 已回款首笔
+                        2: "已回尾款"  # 回款完成
+                    }
 
                     for row in balance_rows:
                         item = dict(zip(balance_columns, row))
@@ -1439,6 +1464,19 @@ class BalanceService:
                         item['payment_status_name'] = status_map.get(item.get('payment_status'), "未知")
                         item['payout_status_name'] = payout_map.get(item.get('payout_status'), "未知")
                         item['schedule_status_name'] = schedule_map.get(item.get('schedule_status'), "未知")
+
+                        # 计算回款状态（基于支付状态简化处理，实际应根据收款明细表判断）
+                        paid = item.get('paid_amount', 0) or 0
+                        payable = item.get('payable_amount', 0) or 0
+                        if paid >= payable:
+                            collection_status = 2  # 已回尾款
+                        elif paid > 0:
+                            collection_status = 1  # 已回首笔待回尾款
+                        else:
+                            collection_status = 0  # 待回款
+
+                        item['collection_status'] = collection_status
+                        item['collection_status_name'] = collection_map.get(collection_status, "未知")
 
                         # 构建磅单对象
                         weighbill = None
@@ -1473,45 +1511,113 @@ class BalanceService:
                         balance_id = item['id']
                         payment_receipts = receipts_map.get(balance_id, [])
 
+                        # 计算联单费（从报单获取）
+                        service_fee = 0
+
                         # 操作权限
                         balance_amount = item.get('balance_amount', 0)
-                        schedule_status = item.get('schedule_status', 0)
+                        schedule_status_val = item.get('schedule_status', 0)
                         receipt_count = len(payment_receipts)
 
                         operations = {
+                            'can_edit': True,  # 编辑打款信息权限
                             'can_verify': balance_amount > 0,
-                            'can_batch_verify': balance_amount > 0,
-                            'can_schedule': schedule_status == 0,
-                            'can_modify_schedule': schedule_status == 1,
+                            'can_schedule': schedule_status_val == 0,
+                            'can_modify_schedule': schedule_status_val == 1,
                             'can_view_receipts': receipt_count > 0,
                             'can_view_weighbill': item.get('wb_id') is not None
                         }
 
-                        # 构建最终结余对象
+                        # 构建最终结余对象（包含所有表头字段）
                         balance_item = {
-                            'id': item['id'],
-                            'contract_no': item['contract_no'],
-                            'delivery_id': item['delivery_id'],
-                            'weighbill_id': item['weighbill_id'],
-                            'driver_name': item['driver_name'],
-                            'driver_phone': item['driver_phone'],
-                            'vehicle_no': item['vehicle_no'],
-                            'payee_id': item['payee_id'],
-                            'payee_name': item['payee_name'],
-                            'payee_account': item['payee_account'],
-                            'purchase_unit_price': item.get('purchase_unit_price'),
-                            'payable_amount': item['payable_amount'],
-                            'paid_amount': item['paid_amount'],
-                            'balance_amount': item['balance_amount'],
-                            'payment_status': item['payment_status'],
-                            'payment_status_name': item['payment_status_name'],
-                            'payout_status': item['payout_status'],
-                            'payout_status_name': item['payout_status_name'],
+                            # === 排款日期 ===
                             'schedule_date': item['schedule_date'],
                             'schedule_status': item['schedule_status'],
                             'schedule_status_name': item['schedule_status_name'],
+
+                            # === 合同编号 ===
+                            'contract_no': item['contract_no'],
+
+                            # === 报单日期 ===
+                            'report_date': None,  # 从报单填充
+
+                            # === 报送冶炼厂 ===
+                            'target_factory_name': None,  # 从报单填充
+
+                            # === 司机电话 ===
+                            'driver_phone': item['driver_phone'],
+
+                            # === 司机姓名 ===
+                            'driver_name': item['driver_name'],
+
+                            # === 车号 ===
+                            'vehicle_no': item['vehicle_no'],
+
+                            # === 身份证号 ===
+                            'driver_id_card': None,  # 从报单填充
+
+                            # === 品种 ===
+                            'product_name': None,  # 从磅单填充
+
+                            # === 是否自带联单 ===
+                            'has_delivery_order': None,  # 从报单填充
+                            'has_delivery_order_display': None,
+
+                            # === 是否上传联单 ===
+                            'upload_status': None,
+                            'upload_status_display': None,
+
+                            # === 报单人/发货人 ===
+                            'shipper': None,
+                            'reporter_name': None,
+
+                            # === 磅单日期 ===
+                            'weigh_date': weighbill['weigh_date'] if weighbill else None,
+
+                            # === 过磅单号 ===
+                            'weigh_ticket_no': weighbill['weigh_ticket_no'] if weighbill else None,
+
+                            # === 净重 ===
+                            'net_weight': weighbill['net_weight'] if weighbill else None,
+
+                            # === 采购单价 ===
+                            'purchase_unit_price': item.get('purchase_unit_price'),
+
+                            # === 联单费 ===
+                            'service_fee': service_fee,
+
+                            # === 应打款金额 ===
+                            'payable_amount': item['payable_amount'],
+
+                            # === 已打款金额 ===
+                            'paid_amount': item['paid_amount'],
+
+                            # === 收款人 ===
+                            'payee_name': item['payee_name'],
+
+                            # === 收款人账号 ===
+                            'payee_account': item['payee_account'],
+
+                            # === 打款状态 ===
+                            'payout_status': item['payout_status'],
+                            'payout_status_name': item['payout_status_name'],
+
+                            # === 回款状态 ===
+                            'collection_status': item['collection_status'],
+                            'collection_status_name': item['collection_status_name'],
+
+                            # === 结余基础信息 ===
+                            'id': item['id'],
+                            'delivery_id': item['delivery_id'],
+                            'weighbill_id': item['weighbill_id'],
+                            'payee_id': item['payee_id'],
+                            'payment_status': item['payment_status'],
+                            'payment_status_name': item['payment_status_name'],
+                            'balance_amount': item['balance_amount'],
                             'created_at': item['created_at'],
                             'updated_at': item['updated_at'],
+
+                            # === 关联对象 ===
                             'weighbill': weighbill,
                             'payment_receipts': payment_receipts,
                             'receipt_count': receipt_count,
@@ -1552,47 +1658,45 @@ class BalanceService:
                                 'product_name') else []
 
                         # 显示字段转换
-                        delivery['has_delivery_order_display'] = '是' if delivery.get(
-                            'has_delivery_order') == '有' else '否'
-                        delivery['upload_status_display'] = '是' if delivery.get('upload_status') == '已上传' else '否'
+                        has_order = delivery.get('has_delivery_order')
+                        upload_status = delivery.get('upload_status')
 
                         delivery_id = delivery['id']
                         balance_items = balance_map.get(delivery_id, [])
 
+                        # 填充报单信息到每条结余明细
+                        for item in balance_items:
+                            item['report_date'] = delivery.get('report_date')
+                            item['target_factory_name'] = delivery.get('target_factory_name')
+                            item['driver_id_card'] = delivery.get('driver_id_card')
+                            item['shipper'] = delivery.get('shipper')
+                            item['reporter_name'] = delivery.get('reporter_name')
+                            item['service_fee'] = delivery.get('service_fee', 0)
+                            item['has_delivery_order'] = has_order
+                            item['has_delivery_order_display'] = '是' if has_order == '有' else '否'
+                            item['upload_status'] = upload_status
+                            item['upload_status_display'] = '是' if upload_status == '已上传' else '否'
+
+                            # 品种从磅单获取
+                            if item['weighbill']:
+                                item['product_name'] = item['weighbill'].get('product_name')
+
                         result_data.append({
                             # 报单基础信息
                             'delivery_id': delivery_id,
+                            'contract_no': delivery.get('contract_no'),
                             'report_date': delivery.get('report_date'),
-                            'warehouse': delivery.get('warehouse'),
-                            'target_factory_id': delivery.get('target_factory_id'),
                             'target_factory_name': delivery.get('target_factory_name'),
-                            'product_name': delivery.get('product_name'),
-                            'products': delivery.get('products'),
-                            'quantity': delivery.get('quantity'),
-                            'vehicle_no': delivery.get('vehicle_no'),
                             'driver_name': delivery.get('driver_name'),
                             'driver_phone': delivery.get('driver_phone'),
                             'driver_id_card': delivery.get('driver_id_card'),
-                            'has_delivery_order': delivery.get('has_delivery_order'),
-                            'has_delivery_order_display': delivery.get('has_delivery_order_display'),
-                            'delivery_order_image': delivery.get('delivery_order_image'),
-                            'upload_status': delivery.get('upload_status'),
-                            'upload_status_display': delivery.get('upload_status_display'),
-                            'source_type': delivery.get('source_type'),
+                            'vehicle_no': delivery.get('vehicle_no'),
                             'shipper': delivery.get('shipper'),
-                            'reporter_id': delivery.get('reporter_id'),
                             'reporter_name': delivery.get('reporter_name'),
-                            'payee': delivery.get('payee'),
-                            'service_fee': delivery.get('service_fee'),
-                            'contract_no': delivery.get('contract_no'),
-                            'contract_unit_price': delivery.get('contract_unit_price'),
-                            'total_amount': delivery.get('total_amount'),
-                            'status': delivery.get('status'),
-                            'uploader_id': delivery.get('uploader_id'),
-                            'uploader_name': delivery.get('uploader_name'),
-                            'uploaded_at': delivery.get('uploaded_at'),
-                            'created_at': delivery.get('created_at'),
-                            'updated_at': delivery.get('updated_at'),
+                            'warehouse': delivery.get('warehouse'),
+                            'has_delivery_order': has_order,
+                            'has_delivery_order_display': '是' if has_order == '有' else '否',
+                            'service_fee': delivery.get('service_fee', 0),
 
                             # 结余统计
                             'balance_summary': {
@@ -1605,7 +1709,7 @@ class BalanceService:
                                 'total_balance': delivery.get('total_balance', 0)
                             },
 
-                            # 结余明细列表
+                            # 结余明细列表（已填充完整表头字段）
                             'balance_items': balance_items
                         })
 
