@@ -25,6 +25,33 @@ UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 class DeliveryService:
     """报货订单服务"""
 
+    def _delivery_has_products_column(self) -> bool:
+        """兼容旧库：动态检测 pd_deliveries 是否存在 products 列。"""
+        cached = getattr(self, "_products_column_exists", None)
+        if cached is not None:
+            return cached
+
+        exists = False
+        try:
+            with get_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT 1
+                        FROM information_schema.COLUMNS
+                        WHERE TABLE_SCHEMA = DATABASE()
+                          AND TABLE_NAME = 'pd_deliveries'
+                          AND COLUMN_NAME = 'products'
+                        LIMIT 1
+                        """
+                    )
+                    exists = cur.fetchone() is not None
+        except Exception as e:
+            logger.warning(f"检测 pd_deliveries.products 字段失败，将按不存在处理: {e}")
+
+        self._products_column_exists = exists
+        return exists
+
     def _get_upload_status(self, image_path: Optional[str]) -> str:
         if image_path and os.path.exists(image_path):
             return "联单已上传"
@@ -71,15 +98,17 @@ class DeliveryService:
                         return None, None, None
 
                     cur.execute("""
-                        SELECT contract_no, unit_price 
-                        FROM pd_contracts 
-                        WHERE smelter_company = %s 
-                        AND status = '生效中'
-                        AND contract_date <= CURDATE()
-                        AND (end_date IS NULL OR end_date >= CURDATE())
-                        ORDER BY created_at DESC
+                        SELECT c.contract_no, p.unit_price
+                        FROM pd_contracts c
+                        JOIN pd_contract_products p ON p.contract_id = c.id
+                        WHERE c.smelter_company = %s
+                        AND p.product_name = %s
+                        AND c.status = '生效中'
+                        AND c.contract_date <= CURDATE()
+                        AND (c.end_date IS NULL OR c.end_date >= CURDATE())
+                        ORDER BY c.created_at DESC, p.sort_order ASC
                         LIMIT 1
-                    """, (factory_name,))
+                    """, (factory_name, product_name))
 
                     contract = cur.fetchone()
                     if not contract:
@@ -377,10 +406,12 @@ class DeliveryService:
 
             with get_conn() as conn:
                 with conn.cursor() as cur:
+                    has_products_column = self._delivery_has_products_column()
+
                     # 构建插入字段
                     insert_fields = [
                         'report_date', 'warehouse', 'target_factory_id', 'target_factory_name',
-                        'product_name', 'products', 'quantity', 'vehicle_no', 'driver_name',
+                        'product_name', 'quantity', 'vehicle_no', 'driver_name',
                         'driver_phone', 'driver_id_card', 'has_delivery_order', 'delivery_order_image',
                         'upload_status', 'source_type', 'shipper', 'payee', 'service_fee',
                         'contract_no', 'contract_unit_price', 'total_amount', 'status',
@@ -394,7 +425,6 @@ class DeliveryService:
                         data.get('target_factory_id'),
                         data.get('target_factory_name'),
                         products[0] if products else data.get('product_name'),  # 主品种
-                        ','.join(products) if products else None,  # 品种列表
                         quantity,
                         data.get('vehicle_no'),
                         data.get('driver_name'),
@@ -416,6 +446,10 @@ class DeliveryService:
                         reporter_id,
                         reporter_name,
                     ]
+
+                    if has_products_column:
+                        insert_fields.insert(5, 'products')
+                        values.insert(5, ','.join(products) if products else None)
 
                     # 构建 SQL
                     placeholders = ','.join(['%s'] * len(values))
@@ -537,11 +571,16 @@ class DeliveryService:
 
                     fields = [
                         'report_date', 'warehouse', 'target_factory_id', 'target_factory_name',
-                        'product_name', 'products', 'quantity', 'vehicle_no', 'driver_name', 'driver_phone', 'driver_id_card',
+                        'product_name', 'quantity', 'vehicle_no', 'driver_name', 'driver_phone', 'driver_id_card',
                         'has_delivery_order', 'delivery_order_image', 'upload_status', 'source_type',
                         'shipper', 'payee', 'service_fee', 'contract_no', 'contract_unit_price', 'total_amount',
                         'status', 'reporter_id', 'reporter_name'
                     ]
+
+                    if self._delivery_has_products_column():
+                        fields.insert(5, 'products')
+                    elif 'products' in data:
+                        data.pop('products', None)
 
                     update_fields = []
                     params = []
