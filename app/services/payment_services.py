@@ -1453,7 +1453,10 @@ class PaymentService:
         with get_conn() as conn:
             with conn.cursor() as cur:
                 # 构建WHERE条件
-                where_clauses = ["1=1"]
+                where_clauses = [
+                    "1=1",
+                    "EXISTS (SELECT 1 FROM pd_contracts c WHERE c.contract_no = pd.contract_no)"
+                ]
                 params = []
                 
                 if contract_no:

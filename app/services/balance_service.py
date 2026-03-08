@@ -1125,7 +1125,8 @@ class BalanceService:
             min_balance: float = 0.01,
             payment_status: int = None,
             page: int = 1,
-            page_size: int = 20
+            page_size: int = 20,
+            _retry_count: int = 0
     ) -> Dict[str, Any]:
         """
         按收款人汇总统计结余
@@ -1261,6 +1262,20 @@ class BalanceService:
                     }
 
         except Exception as e:
+            # 偶发 MySQL 通信包序异常时，重建连接后重试一次
+            if "Packet sequence number wrong" in str(e) and _retry_count < 1:
+                logger.warning(f"按收款人汇总查询触发重试: {e}")
+                return self.list_balance_summary_by_payee(
+                    payee_name=payee_name,
+                    driver_phone=driver_phone,
+                    fuzzy_keywords=fuzzy_keywords,
+                    min_balance=min_balance,
+                    payment_status=payment_status,
+                    page=page,
+                    page_size=page_size,
+                    _retry_count=_retry_count + 1
+                )
+
             logger.error(f"按收款人汇总查询失败: {e}")
             return {"success": False, "error": str(e), "data": [], "total": 0}
 
