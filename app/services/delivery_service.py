@@ -4,14 +4,11 @@
 import logging
 import os
 import re
-import shutil
 from decimal import Decimal
-from pathlib import Path
 from typing import Dict, List, Optional, Any
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from app.services.contract_service import get_conn
-from app.services.customer_service import CustomerService
 
 logger = logging.getLogger(__name__)
 

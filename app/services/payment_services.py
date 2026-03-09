@@ -1,6 +1,6 @@
 # payment_services.py
 import re
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any
 from enum import IntEnum
 from datetime import datetime, date
 from decimal import Decimal, ROUND_HALF_UP

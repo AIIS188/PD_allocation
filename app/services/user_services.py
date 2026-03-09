@@ -1,11 +1,10 @@
 import bcrypt
 import re
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any
 from enum import IntEnum
-from datetime import datetime
 
 from core.database import get_conn
-from core.table_access import build_dynamic_select, _quote_identifier, build_select_list
+from core.table_access import build_dynamic_select, _quote_identifier
 from core.logging import get_logger
 
 logger = get_logger(__name__)
