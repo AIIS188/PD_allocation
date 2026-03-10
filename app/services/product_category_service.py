@@ -4,7 +4,7 @@
 import logging
 from typing import Any, Dict, List, Optional, Tuple
 
-from app.services.contract_service import get_conn
+from core.database import get_conn
 
 logger = logging.getLogger(__name__)
 
