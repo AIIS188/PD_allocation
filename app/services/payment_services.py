@@ -1093,7 +1093,7 @@ class PaymentService:
                             END,
                             0
                         ) as 应打款金额,
-                        COALESCE(b.paid_amount, pd.paid_amount, 0) as 已打款金额,
+                        COALESCE(b.paid_amount, 0) as 已打款金额,
                         {payee_select} as 收款人,
                         {payee_account_select} as 收款人账号,
                         CASE
@@ -1128,7 +1128,17 @@ class PaymentService:
                         b.id as balance_id,
                         wb.id as weighbill_id,
                         d.id as delivery_id,
-                        COALESCE(b.balance_amount, pd.unpaid_amount, 0) as 未打款金额,
+                        COALESCE(
+                            b.balance_amount,
+                            GREATEST(
+                                COALESCE(b.payable_amount, wb.total_amount, pd.total_amount, 0) -
+                                CASE
+                                    WHEN d.has_delivery_order = '无' THEN COALESCE(d.service_fee, 150)
+                                    ELSE COALESCE(d.service_fee, 0)
+                                END - COALESCE(b.paid_amount, 0),
+                                0
+                            )
+                        ) as 未打款金额,
                         pd.created_at,
                         pd.updated_at,
 
