@@ -590,23 +590,79 @@ class PermissionService:
         full_template = {field: template.get(field, 0) for field in all_fields}
         return full_template
 
+    # 在 PermissionService 类中添加
+    from typing import List, Optional
+
     @staticmethod
-    def update_role_template(role: str, permissions: Dict[str, bool]) -> bool:
-        """更新角色模板到数据库（内存不再维护）"""
-        # 构建完整权限字典（所有字段，未指定的置0）
+    def apply_role_template_to_users(role: str, user_ids: Optional[List[int]] = None) -> int:
+        """
+        将指定角色的权限模板应用到用户（覆盖用户现有权限）
+        Args:
+            role: 角色名称
+            user_ids: 可选的用户ID列表，如果为None则应用到所有该角色的用户
+        Returns:
+            更新的用户数量
+        """
+        # 获取模板（已包含所有字段）
+        template = PermissionService.get_role_template(role)
+        all_fields = PermissionService.get_all_fields()
+
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                # 确定要更新的用户ID列表
+                if user_ids is None:
+                    cur.execute("SELECT user_id FROM pd_user_permissions WHERE role=%s", (role,))
+                    rows = cur.fetchall()
+                    user_ids = [row['user_id'] for row in rows]
+                    if not user_ids:
+                        return 0
+
+                # 对每个用户重建权限
+                for uid in user_ids:
+                    # 删除现有权限
+                    cur.execute("DELETE FROM pd_user_permissions WHERE user_id=%s", (uid,))
+                    # 插入新权限（基于模板）
+                    fields = ['user_id', 'role'] + all_fields
+                    values = [uid, role] + [template.get(f, 0) for f in all_fields]
+                    placeholders = ','.join(['%s'] * len(values))
+                    fields_sql = ','.join(fields)
+                    sql = f"INSERT INTO pd_user_permissions ({fields_sql}) VALUES ({placeholders})"
+                    cur.execute(sql, tuple(values))
+
+                conn.commit()
+                logger.info(f"已将角色 {role} 的模板应用到 {len(user_ids)} 个用户")
+                return len(user_ids)
+
+    @staticmethod
+    def update_role_template(role: str, permissions: Dict[str, bool], apply_to_existing: bool = False) -> bool:
+        """
+        更新角色模板
+        Args:
+            role: 角色名称
+            permissions: 权限字典
+            apply_to_existing: 是否将更新后的模板应用到现有用户
+        """
+        # 构建完整权限字典
         all_fields = PermissionService.get_all_fields()
         full_permissions = {
             field: 1 if permissions.get(field, False) else 0
             for field in all_fields
         }
+
         with get_conn() as conn:
             with conn.cursor() as cur:
+                # 更新模板表
                 cur.execute("""
                     INSERT INTO pd_role_templates (role, template_json) 
                     VALUES (%s, %s) 
                     ON DUPLICATE KEY UPDATE template_json = VALUES(template_json)
                 """, (role, json.dumps(full_permissions)))
                 conn.commit()
+
+        # 如果需要应用到现有用户
+        if apply_to_existing:
+            PermissionService.apply_role_template_to_users(role)
+
         return True
 
     @staticmethod
