@@ -465,6 +465,48 @@ class WeighbillService:
 
         return self.match_delivery_info(weigh_date, vehicle_no)
 
+    def _normalize_delivery_payee(self, payee_value: Optional[Any]) -> Optional[str]:
+        """兼容前端传收款人ID或名称，统一转成收款人名称。"""
+        if payee_value is None:
+            return None
+
+        raw = str(payee_value).strip()
+        if raw == "":
+            return None
+
+        if raw.isdigit():
+            payee_info = self._get_payee_by_id(int(raw))
+            if payee_info:
+                return payee_info.get("payee_name") or raw
+
+        return raw
+
+    def _sync_delivery_fields(self, delivery_id: int, data: Dict[str, Any]) -> None:
+        """将磅单上传时附带的库房/收款人同步回报单。"""
+        warehouse = data.get("warehouse")
+        payee = self._normalize_delivery_payee(data.get("payee")) if "payee" in data else None
+
+        update_fields = []
+        params = []
+
+        if warehouse is not None:
+            update_fields.append("warehouse = %s")
+            params.append(warehouse)
+        if "payee" in data:
+            update_fields.append("payee = %s")
+            params.append(payee)
+
+        if not update_fields:
+            return
+
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                params.append(delivery_id)
+                cur.execute(
+                    f"UPDATE pd_deliveries SET {', '.join(update_fields)}, updated_at = NOW() WHERE id = %s",
+                    tuple(params)
+                )
+
     def upload_weighbill(
             self,
             delivery_id: int,
@@ -634,6 +676,13 @@ class WeighbillService:
                         weighbill_id = cur.lastrowid
                         action = 'created'
 
+            if any(key in payload for key in ("warehouse", "payee")):
+                self._sync_delivery_fields(delivery_id, payload)
+
+            delivery_info = self.get_delivery_info(delivery_id) or {}
+            final_payee = delivery_info.get("payee")
+            final_warehouse = delivery_info.get("warehouse")
+
             if temp_file_path and old_image_path and old_image_path != temp_file_path and os.path.exists(old_image_path):
                 try:
                     os.remove(old_image_path)
@@ -654,6 +703,8 @@ class WeighbillService:
                     "net_weight": float(net_weight_decimal),
                     "total_amount": float(total_amount_decimal) if total_amount_decimal is not None else None,
                     "weighbill_image": final_image_path,
+                    "warehouse": final_warehouse,
+                    "payee": final_payee,
                 }
             }
 

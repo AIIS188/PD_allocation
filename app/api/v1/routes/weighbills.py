@@ -331,6 +331,7 @@ async def upload_weighbill(
 @router.put("/modify", response_model=dict)
 async def modify_weighbill(
         weighbill_id: int = Form(..., description="磅单ID"),
+    matched_delivery_id: Optional[int] = Form(None, description="匹配的报单ID"),
         weigh_date: Optional[str] = Form(None, description="磅单日期"),
         weigh_ticket_no: Optional[str] = Form(None, description="过磅单号"),
         contract_no: Optional[str] = Form(None, description="合同编号"),
@@ -378,8 +379,10 @@ async def modify_weighbill(
         if weighbill_image:
             image_bytes = await weighbill_image.read()
 
+        target_delivery_id = matched_delivery_id or existing.get('delivery_id')
+
         result = service.upload_weighbill(
-            delivery_id=existing.get('delivery_id'),
+            delivery_id=target_delivery_id,
             product_name=final_product,
             data=data,
             image_file=image_bytes,
@@ -393,7 +396,7 @@ async def modify_weighbill(
                 from app.services.payment_services import PaymentService, calculate_payment_amount
                 from decimal import Decimal
                 
-                delivery_id = existing.get('delivery_id')
+                delivery_id = target_delivery_id
                 delivery_info = service.get_delivery_info(delivery_id)
                 
                 final_unit_price = data.get('unit_price') or existing.get('unit_price')
