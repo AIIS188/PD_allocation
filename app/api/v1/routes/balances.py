@@ -280,6 +280,11 @@ async def list_balances_grouped(
 async def update_balance_payment(
         balance_id: int,
         paid_amount: float = Form(..., description="已打款金额"),
+    payment_detail_id: Optional[int] = Form(None, description="收款明细ID，未传结余ID时自动匹配"),
+    delivery_id: Optional[int] = Form(None, description="报单ID，未传结余ID时自动匹配"),
+    contract_no: Optional[str] = Form(None, description="合同编号，未传结余ID时自动匹配"),
+    vehicle_no: Optional[str] = Form(None, description="车号，未传结余ID时自动匹配"),
+    driver_phone: Optional[str] = Form(None, description="司机电话，未传结余ID时自动匹配"),
         payee_name: Optional[str] = Form(None, description="收款人姓名"),
         payee_account: Optional[str] = Form(None, description="收款人账号"),
         payout_date: Optional[str] = Form(None, description="打款日期，格式：YYYY-MM-DD"),
@@ -305,28 +310,18 @@ async def update_balance_payment(
     - 0 < 已打款金额 < 应付金额 → 部分支付
     """
     try:
-        resolved_balance_id = balance_id
+        resolved_balance_id = service.resolve_balance_id(
+            balance_id=balance_id,
+            payment_detail_id=payment_detail_id,
+            delivery_id=delivery_id,
+            contract_no=contract_no,
+            vehicle_no=vehicle_no,
+            driver_phone=driver_phone,
+        )
 
-        # 先检查结余明细是否存在
         result = service.recalculate_balance(resolved_balance_id)
         if not result["success"]:
-            # 兼容前端误传 payment_detail_id：通过磅单ID映射到 balance_id
-            with get_conn() as conn:
-                with conn.cursor() as cur:
-                    cur.execute("SELECT weighbill_id FROM pd_payment_details WHERE id = %s", (balance_id,))
-                    row = cur.fetchone()
-                    if row and row[0]:
-                        cur.execute(
-                            "SELECT id FROM pd_balance_details WHERE weighbill_id = %s ORDER BY id DESC LIMIT 1",
-                            (row[0],)
-                        )
-                        mapped = cur.fetchone()
-                        if mapped and mapped[0]:
-                            resolved_balance_id = int(mapped[0])
-                            result = service.recalculate_balance(resolved_balance_id)
-
-        if not result["success"]:
-            raise HTTPException(status_code=404, detail="结余明细不存在")
+            raise HTTPException(status_code=404, detail=result.get("error") or "结余明细不存在")
 
         # 根据已打款金额自动判断打款状态
         payout_status = 1 if paid_amount > 0 else 0
@@ -395,6 +390,8 @@ async def update_balance_payment(
             "data": {
                 "id": resolved_balance_id,
                 "requested_id": balance_id,
+                "payment_detail_id": payment_detail_id,
+                "delivery_id": delivery_id,
                 "paid_amount": paid_amount,
                 "payee_name": payee_name,
                 "payee_account": payee_account,

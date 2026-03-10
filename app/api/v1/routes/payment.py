@@ -54,6 +54,9 @@ class RecordPaymentReq(BaseModel):
     model_config = ConfigDict(json_schema_extra={
         "example": {
             "payment_detail_id": 1,
+            "contract_no": "HT-2025-001",
+            "vehicle_no": "冀A12345",
+            "product_name": "电动车",
             "payment_amount": 1356750.00,
             "payment_stage": 1,
             "payment_date": "2025-02-24",
@@ -63,7 +66,12 @@ class RecordPaymentReq(BaseModel):
         }
     })
 
-    payment_detail_id: int = Field(..., gt=0, description="收款明细ID")
+    payment_detail_id: Optional[int] = Field(None, gt=0, description="收款明细ID，已知时优先使用")
+    weighbill_id: Optional[int] = Field(None, gt=0, description="磅单ID，可选")
+    delivery_id: Optional[int] = Field(None, gt=0, description="报单ID，可选")
+    contract_no: Optional[str] = Field(None, description="合同编号，用于自动匹配")
+    vehicle_no: Optional[str] = Field(None, description="车号，用于自动匹配")
+    product_name: Optional[str] = Field(None, description="品种，用于自动匹配")
     payment_amount: float = Field(..., gt=0, description="回款金额")
     payment_stage: PaymentStageEnum = Field(PaymentStageEnum.DELIVERY, description="回款阶段：0-定金, 1-到货款(90%), 2-尾款(10%)")
     payment_date: Optional[date] = Field(None, description="回款日期，默认今天")
@@ -774,8 +782,17 @@ def record_payment(
     check_finance_permission(current_user)
 
     try:
-        result = PaymentService.record_payment(
+        resolved_payment_detail_id = PaymentService.resolve_payment_detail_id(
             payment_detail_id=body.payment_detail_id,
+            weighbill_id=body.weighbill_id,
+            delivery_id=body.delivery_id,
+            contract_no=body.contract_no,
+            vehicle_no=body.vehicle_no,
+            product_name=body.product_name,
+        )
+
+        result = PaymentService.record_payment(
+            payment_detail_id=resolved_payment_detail_id,
             payment_amount=Decimal(str(body.payment_amount)),
             payment_stage=PaymentStage(body.payment_stage),
             payment_date=body.payment_date,
@@ -786,7 +803,7 @@ def record_payment(
         )
         
         # 返回完整的收款明细信息
-        full_detail = PaymentService.get_payment_detail(body.payment_detail_id)
+        full_detail = PaymentService.get_payment_detail(resolved_payment_detail_id)
         
         return {
             "msg": "回款记录录入成功",
@@ -807,9 +824,12 @@ def record_payment(
 
 class CreatePaymentByWeighbillReq(BaseModel):
     """根据磅单创建回款信息"""
-    weighbill_id: int = Field(..., description="磅单ID")
+    weighbill_id: Optional[int] = Field(None, description="磅单ID，已知时优先使用")
+    delivery_id: Optional[int] = Field(None, gt=0, description="报单ID，可选")
     contract_no: str = Field(..., description="合同编号")
-    smelter_name: str = Field(..., description="冶炼厂名称")
+    smelter_name: Optional[str] = Field(None, description="冶炼厂名称")
+    vehicle_no: Optional[str] = Field(None, description="车号，用于自动匹配")
+    product_name: Optional[str] = Field(None, description="品种，用于自动匹配")
 
 
 @router.post("/details/create-by-weighbill", summary="根据磅单手动创建回款信息", response_model=dict)
@@ -824,6 +844,15 @@ def create_payment_by_weighbill(
     check_finance_permission(current_user)
 
     try:
+        resolved_weighbill_id = PaymentService.resolve_weighbill_id_for_payment(
+            weighbill_id=body.weighbill_id,
+            delivery_id=body.delivery_id,
+            contract_no=body.contract_no,
+            smelter_name=body.smelter_name,
+            vehicle_no=body.vehicle_no,
+            product_name=body.product_name,
+        )
+
         with get_conn() as conn:
             with conn.cursor() as cur:
                 # 获取磅单信息
@@ -832,7 +861,7 @@ def create_payment_by_weighbill(
                     FROM pd_weighbills w
                     JOIN pd_deliveries d ON w.delivery_id = d.id
                     WHERE w.id = %s
-                """, (body.weighbill_id,))
+                """, (resolved_weighbill_id,))
                 weighbill = cur.fetchone()
 
                 if not weighbill:
@@ -841,7 +870,7 @@ def create_payment_by_weighbill(
                 # 检查是否已存在回款信息
                 cur.execute("""
                     SELECT id FROM pd_payment_details WHERE weighbill_id = %s
-                """, (body.weighbill_id,))
+                """, (resolved_weighbill_id,))
                 if cur.fetchone():
                     return {"msg": "该磅单已存在回款信息，无需重复创建"}
 
@@ -853,7 +882,7 @@ def create_payment_by_weighbill(
                 net_weight = Decimal(str(weighbill['net_weight'])) if weighbill.get('net_weight') else None
 
                 result = PaymentService.create_or_update_by_weighbill(
-                    weighbill_id=body.weighbill_id,
+                    weighbill_id=resolved_weighbill_id,
                     delivery_id=weighbill['delivery_id'],
                     contract_no=body.contract_no,
                     smelter_name=body.smelter_name or weighbill.get('target_factory_name', ''),

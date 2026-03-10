@@ -201,6 +201,98 @@ class BalanceService:
             logger.error(f"重新计算结余失败: {e}")
             return {"success": False, "error": str(e)}
 
+    def resolve_balance_id(
+        self,
+        balance_id: Optional[int] = None,
+        payment_detail_id: Optional[int] = None,
+        delivery_id: Optional[int] = None,
+        contract_no: Optional[str] = None,
+        vehicle_no: Optional[str] = None,
+        driver_phone: Optional[str] = None,
+    ) -> int:
+        """根据已知标识自动匹配唯一结余明细。"""
+        normalized_contract_no = contract_no.strip() if isinstance(contract_no, str) and contract_no.strip() else None
+        normalized_vehicle_no = vehicle_no.strip() if isinstance(vehicle_no, str) and vehicle_no.strip() else None
+        normalized_driver_phone = driver_phone.strip() if isinstance(driver_phone, str) and driver_phone.strip() else None
+
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                if balance_id and balance_id > 0:
+                    cur.execute("SELECT id FROM pd_balance_details WHERE id = %s", (balance_id,))
+                    row = cur.fetchone()
+                    if row:
+                        return int(row[0] if not isinstance(row, dict) else row["id"])
+
+                if payment_detail_id and payment_detail_id > 0:
+                    cur.execute(
+                        """
+                        SELECT b.id
+                        FROM pd_payment_details pd
+                        JOIN pd_balance_details b
+                          ON (
+                              (pd.weighbill_id IS NOT NULL AND b.weighbill_id = pd.weighbill_id)
+                              OR (pd.delivery_id IS NOT NULL AND b.delivery_id = pd.delivery_id)
+                              OR (pd.sales_order_id IS NOT NULL AND b.delivery_id = pd.sales_order_id)
+                          )
+                        WHERE pd.id = %s
+                        ORDER BY
+                          CASE
+                            WHEN pd.weighbill_id IS NOT NULL AND b.weighbill_id = pd.weighbill_id THEN 0
+                            WHEN pd.delivery_id IS NOT NULL AND b.delivery_id = pd.delivery_id THEN 1
+                            ELSE 2
+                          END,
+                          b.id DESC
+                        LIMIT 2
+                        """,
+                        (payment_detail_id,),
+                    )
+                    rows = cur.fetchall()
+                    if len(rows) == 1:
+                        row = rows[0]
+                        return int(row[0] if not isinstance(row, dict) else row["id"])
+                    if len(rows) > 1:
+                        raise ValueError("匹配到多条打款明细，请补充报单ID、车号或司机电话后重试")
+
+                where_clauses = ["1=1"]
+                params = []
+
+                if delivery_id:
+                    where_clauses.append("b.delivery_id = %s")
+                    params.append(delivery_id)
+                if normalized_contract_no:
+                    where_clauses.append("b.contract_no = %s")
+                    params.append(normalized_contract_no)
+                if normalized_vehicle_no:
+                    where_clauses.append("b.vehicle_no = %s")
+                    params.append(normalized_vehicle_no)
+                if normalized_driver_phone:
+                    where_clauses.append("b.driver_phone = %s")
+                    params.append(normalized_driver_phone)
+
+                if len(where_clauses) == 1:
+                    raise ValueError("缺少打款匹配条件，请至少提供结余ID、收款明细ID、报单ID、合同编号、车号或司机电话中的一个")
+
+                cur.execute(
+                    f"""
+                    SELECT b.id
+                    FROM pd_balance_details b
+                    WHERE {' AND '.join(where_clauses)}
+                    ORDER BY
+                      CASE WHEN b.payment_status IN (0, 1) THEN 0 ELSE 1 END,
+                      b.id DESC
+                    LIMIT 2
+                    """,
+                    tuple(params),
+                )
+                rows = cur.fetchall()
+                if not rows:
+                    raise ValueError("未找到匹配的打款明细")
+                if len(rows) > 1:
+                    raise ValueError("匹配到多条打款明细，请补充报单ID、车号或司机电话后重试")
+
+                row = rows[0]
+                return int(row[0] if not isinstance(row, dict) else row["id"])
+
     # ========== 支付回单OCR（待完善） ==========
 
     def preprocess_image(self, image_path: str) -> str:

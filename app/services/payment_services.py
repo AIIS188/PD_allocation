@@ -94,6 +94,145 @@ class PaymentService:
     RECORD_TABLE = "pd_payment_records"
 
     @staticmethod
+    def resolve_payment_detail_id(
+        payment_detail_id: Optional[int] = None,
+        weighbill_id: Optional[int] = None,
+        delivery_id: Optional[int] = None,
+        contract_no: Optional[str] = None,
+        vehicle_no: Optional[str] = None,
+        product_name: Optional[str] = None,
+    ) -> int:
+        """根据显式ID或业务字段自动匹配收款明细。"""
+        normalized_contract_no = contract_no.strip() if isinstance(contract_no, str) and contract_no.strip() else None
+        normalized_vehicle_no = vehicle_no.strip() if isinstance(vehicle_no, str) and vehicle_no.strip() else None
+        normalized_product_name = product_name.strip() if isinstance(product_name, str) and product_name.strip() else None
+
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                if payment_detail_id:
+                    cur.execute(
+                        f"SELECT id FROM {PaymentService.TABLE_NAME} WHERE id = %s",
+                        (payment_detail_id,),
+                    )
+                    row = cur.fetchone()
+                    if row:
+                        return int(row["id"])
+
+                where_clauses = []
+                params = []
+
+                if weighbill_id:
+                    where_clauses.append("pd.weighbill_id = %s")
+                    params.append(weighbill_id)
+                if delivery_id:
+                    where_clauses.append("COALESCE(pd.delivery_id, pd.sales_order_id, wb.delivery_id) = %s")
+                    params.append(delivery_id)
+                if normalized_contract_no:
+                    where_clauses.append("COALESCE(pd.contract_no, wb.contract_no, d.contract_no) = %s")
+                    params.append(normalized_contract_no)
+                if normalized_vehicle_no:
+                    where_clauses.append("COALESCE(wb.vehicle_no, d.vehicle_no) = %s")
+                    params.append(normalized_vehicle_no)
+                if normalized_product_name:
+                    where_clauses.append("COALESCE(wb.product_name, d.product_name, pd.material_name) = %s")
+                    params.append(normalized_product_name)
+
+                if not where_clauses:
+                    raise ValueError("缺少收款匹配条件，请至少提供收款明细ID、报单ID、合同编号、车号或品种中的一个")
+
+                query_sql = f"""
+                    SELECT
+                        pd.id,
+                        pd.status,
+                        pd.updated_at
+                    FROM {PaymentService.TABLE_NAME} pd
+                    LEFT JOIN pd_weighbills wb ON wb.id = pd.weighbill_id
+                    LEFT JOIN pd_deliveries d ON d.id = COALESCE(pd.delivery_id, pd.sales_order_id, wb.delivery_id)
+                    WHERE {' AND '.join(where_clauses)}
+                    ORDER BY
+                        CASE WHEN pd.status = %s THEN 1 ELSE 0 END,
+                        pd.updated_at DESC,
+                        pd.id DESC
+                    LIMIT 2
+                """
+                cur.execute(query_sql, tuple(params + [int(PaymentStatus.PAID)]))
+                rows = cur.fetchall()
+
+                if not rows:
+                    raise ValueError("未找到匹配的收款明细")
+                if len(rows) > 1:
+                    raise ValueError("匹配到多条收款明细，请补充报单ID、车号或品种后重试")
+
+                return int(rows[0]["id"])
+
+    @staticmethod
+    def resolve_weighbill_id_for_payment(
+        weighbill_id: Optional[int] = None,
+        delivery_id: Optional[int] = None,
+        contract_no: Optional[str] = None,
+        smelter_name: Optional[str] = None,
+        vehicle_no: Optional[str] = None,
+        product_name: Optional[str] = None,
+    ) -> int:
+        """手动补建回款信息时自动匹配唯一磅单。"""
+        normalized_contract_no = contract_no.strip() if isinstance(contract_no, str) and contract_no.strip() else None
+        normalized_smelter_name = smelter_name.strip() if isinstance(smelter_name, str) and smelter_name.strip() else None
+        normalized_vehicle_no = vehicle_no.strip() if isinstance(vehicle_no, str) and vehicle_no.strip() else None
+        normalized_product_name = product_name.strip() if isinstance(product_name, str) and product_name.strip() else None
+
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                if weighbill_id:
+                    cur.execute("SELECT id FROM pd_weighbills WHERE id = %s", (weighbill_id,))
+                    row = cur.fetchone()
+                    if row:
+                        return int(row["id"])
+
+                where_clauses = ["pd.id IS NULL", "d.id IS NOT NULL"]
+                params = []
+
+                if delivery_id:
+                    where_clauses.append("wb.delivery_id = %s")
+                    params.append(delivery_id)
+                if normalized_contract_no:
+                    where_clauses.append("wb.contract_no = %s")
+                    params.append(normalized_contract_no)
+                if normalized_smelter_name:
+                    where_clauses.append("d.target_factory_name = %s")
+                    params.append(normalized_smelter_name)
+                if normalized_vehicle_no:
+                    where_clauses.append("wb.vehicle_no = %s")
+                    params.append(normalized_vehicle_no)
+                if normalized_product_name:
+                    where_clauses.append("wb.product_name = %s")
+                    params.append(normalized_product_name)
+
+                if not (delivery_id or normalized_contract_no or normalized_vehicle_no or normalized_product_name):
+                    raise ValueError("缺少磅单匹配条件，请至少提供磅单ID、报单ID、合同编号、车号或品种中的一个")
+
+                query_sql = """
+                    SELECT wb.id
+                    FROM pd_weighbills wb
+                    LEFT JOIN pd_deliveries d ON d.id = wb.delivery_id
+                    LEFT JOIN pd_payment_details pd ON pd.weighbill_id = wb.id
+                    WHERE {where_sql}
+                    ORDER BY
+                        CASE WHEN wb.upload_status = '已上传' THEN 0 ELSE 1 END,
+                        wb.updated_at DESC,
+                        wb.id DESC
+                    LIMIT 2
+                """.format(where_sql=" AND ".join(where_clauses))
+                cur.execute(query_sql, tuple(params))
+                rows = cur.fetchall()
+
+                if not rows:
+                    raise ValueError("未找到可用于创建回款信息的磅单")
+                if len(rows) > 1:
+                    raise ValueError("匹配到多条磅单，请补充报单ID、车号或品种后重试")
+
+                return int(rows[0]["id"])
+
+    @staticmethod
     def _get_collection_status_name(
         smelter_name: Optional[str],
         arrival_paid_amount: Optional[float],
