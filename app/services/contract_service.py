@@ -795,7 +795,7 @@ _contract_service = None
 
 
 def expire_contracts_after_grace(grace_days: int = 5) -> int:
-    """合同生效后超过指定天数自动失效"""
+    """按截止日期零点失效合同；无截止日期时兼容旧规则。"""
     try:
         with get_conn() as conn:
             with conn.cursor() as cur:
@@ -804,8 +804,14 @@ def expire_contracts_after_grace(grace_days: int = 5) -> int:
                     UPDATE pd_contracts
                     SET status = '已失效'
                     WHERE status = '生效中'
-                      AND contract_date IS NOT NULL
-                      AND DATE_ADD(contract_date, INTERVAL %s DAY) <= CURDATE()
+                      AND (
+                        (end_date IS NOT NULL AND end_date <= CURDATE())
+                        OR (
+                          end_date IS NULL
+                          AND contract_date IS NOT NULL
+                          AND DATE_ADD(contract_date, INTERVAL %s DAY) <= CURDATE()
+                        )
+                      )
                     """,
                     (grace_days,),
                 )

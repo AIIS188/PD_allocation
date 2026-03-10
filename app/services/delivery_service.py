@@ -174,7 +174,7 @@ class DeliveryService:
                         AND p.unit_price > 0              -- 只匹配有效价格（价格>0）
                         AND c.status = '生效中'
                         AND c.contract_date <= %s
-                        AND (c.end_date IS NULL OR c.end_date >= %s)
+                        AND (c.end_date IS NULL OR c.end_date > %s)
                         ORDER BY c.created_at DESC, p.sort_order ASC
                     """, (factory_name, product_name, effective_date, effective_date))
 
