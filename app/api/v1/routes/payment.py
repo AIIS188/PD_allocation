@@ -307,10 +307,12 @@ class ContractPaymentDetailResp(BaseModel):
     payment_record_count: int
 
 class UpdateCollectionReq(BaseModel):
-    """编辑回款请求"""
+    """编辑回款请求（金利分阶段日期，豫光单一日期）"""
     arrival_paid_amount: Optional[float] = Field(None, ge=0, description="已回款首笔金额")
-    final_paid_amount: Optional[float] = Field(None, ge=0, description="已回款尾款金额")
-    payment_date: Optional[str] = Field(None, description="回款日期，格式：YYYY-MM-DD")
+    final_paid_amount: Optional[float] = Field(None, ge=0, description="已回款尾款金额（仅金利使用）")
+    arrival_payment_date: Optional[str] = Field(None, description="首笔回款日期，格式：YYYY-MM-DD（金利必填，豫光可用）")
+    final_payment_date: Optional[str] = Field(None, description="尾款回款日期，格式：YYYY-MM-DD（仅金利使用）")
+    payment_date: Optional[str] = Field(None, description="回款日期，格式：YYYY-MM-DD（兼容旧接口，豫光可用）")
     remark: Optional[str] = Field(None, description="备注")
 # ========== 路由定义 ==========
 
@@ -498,16 +500,40 @@ def update_collection_payment(
         current_user: dict = Depends(get_current_user)
 ):
     """
-    编辑回款信息
+    编辑回款信息（金利分阶段日期，豫光单一日期）
     - payment_id填写实际为payment_detail_id
+    
     填写已回款首笔金额、已回款尾款金额，自动：
     - 计算 paid_amount = 首笔 + 尾款
     - 计算 unpaid_amount = 总额 - 已付
-    - 判断回款状态（金利分阶段，豫光一次性）
+    - 判断回款状态
     - 同步更新回款记录
 
-    金利：分别编辑首笔和尾款
-    豫光：只编辑首笔金额（尾款固定为0）
+    金利冶炼厂：
+    - 分阶段回款：首笔（约90%）+ 尾款（约10%）
+    - 需要分别录入首笔回款日期和尾款回款日期
+    - 字段：arrival_paid_amount + arrival_payment_date, final_paid_amount + final_payment_date
+    
+    豫光冶炼厂：
+    - 一次性回款：只录入首笔金额，尾款自动为0
+    - 只需要一个回款日期
+    - 字段：arrival_paid_amount + arrival_payment_date（或 payment_date）
+    
+    请求示例-金利：
+    {
+        "arrival_paid_amount": 90000.00,
+        "final_paid_amount": 10000.00,
+        "arrival_payment_date": "2026-03-01",
+        "final_payment_date": "2026-03-15",
+        "remark": "分阶段回款"
+    }
+    
+    请求示例-豫光：
+    {
+        "arrival_paid_amount": 100000.00,
+        "arrival_payment_date": "2026-03-01",
+        "remark": "一次性回款"
+    }
     """
     check_finance_permission(current_user)
 
@@ -516,6 +542,8 @@ def update_collection_payment(
             payment_id=payment_id,
             arrival_paid_amount=body.arrival_paid_amount,
             final_paid_amount=body.final_paid_amount,
+            arrival_payment_date=body.arrival_payment_date,
+            final_payment_date=body.final_payment_date,
             payment_date=body.payment_date,
             remark=body.remark,
             updated_by=current_user.get("id")

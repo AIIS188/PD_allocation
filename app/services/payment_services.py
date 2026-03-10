@@ -1192,6 +1192,8 @@ class PaymentService:
             payment_id: int,
             arrival_paid_amount: Optional[float] = None,
             final_paid_amount: Optional[float] = None,
+            arrival_payment_date: Optional[str] = None,
+            final_payment_date: Optional[str] = None,
             payment_date: Optional[str] = None,
             remark: Optional[str] = None,
             updated_by: Optional[int] = None
@@ -1211,9 +1213,17 @@ class PaymentService:
             with conn.cursor() as cur:
                 # 获取当前收款明细
                 cur.execute(f"""
-                    SELECT id, total_amount, arrival_payment_amount, final_payment_amount,
-                           smelter_name, contract_no, delivery_id, weighbill_id
-                    FROM {PaymentService.TABLE_NAME}
+                    SELECT id,
+                        total_amount,
+                        arrival_payment_amount,
+                        final_payment_amount,
+                        arrival_paid_amount,
+                        final_paid_amount,
+                        smelter_name,
+                        contract_no,
+                        delivery_id,
+                        weighbill_id
+                    FROM pd_payment_details
                     WHERE id = %s
                 """, (payment_id,))
 
@@ -1223,6 +1233,7 @@ class PaymentService:
 
                 total_amount = Decimal(str(detail["total_amount"]))
                 smelter_name = detail["smelter_name"] or ""
+                is_jinli = "金利" in smelter_name
 
                 # 新值（如果没传则保持原值）
                 cur_arrival = Decimal(str(detail.get("arrival_paid_amount") or 0))
@@ -1231,12 +1242,16 @@ class PaymentService:
                 new_arrival = Decimal(str(arrival_paid_amount)) if arrival_paid_amount is not None else cur_arrival
                 new_final = Decimal(str(final_paid_amount)) if final_paid_amount is not None else cur_final
 
+                # 豫光：尾款强制为0
+                if not is_jinli:
+                    new_final = Decimal('0')
+
                 # 自动计算
                 new_paid = new_arrival + new_final
                 new_unpaid = total_amount - new_paid
 
                 # 确定回款状态
-                if "金利" in smelter_name:
+                if is_jinli:
                     if new_final > 0:
                         collection_status = 2
                         status_name = "已回款"
@@ -1250,6 +1265,36 @@ class PaymentService:
                     collection_status = 2 if new_arrival > 0 else 0
                     status_name = "已回款" if new_arrival > 0 else "待回款"
 
+                if is_jinli:
+
+                    # 首笔日期必须填写
+                    if new_arrival > 0 and not arrival_payment_date:
+                        raise ValueError("金利首笔回款必须填写回款日期")
+
+                    # 尾款日期必须填写
+                    if new_final > 0 and not final_payment_date:
+                        raise ValueError("金利尾款回款必须填写回款日期")
+
+                    arrival_date = arrival_payment_date
+                    final_date = final_payment_date
+                    # 金利：尾款日期
+                    if final_payment_date:
+                        final_date = final_payment_date
+                    elif payment_date and new_final > cur_final:
+                        final_date = payment_date
+                    else:
+                        final_date = datetime.now().strftime('%Y-%m-%d') if new_final > 0 else None
+                else:
+                    # 豫光：只有一个日期
+                    single_date = arrival_payment_date or payment_date
+
+                    if new_arrival > 0 and not single_date:
+                        raise ValueError("回款必须填写日期")
+                    if not single_date and new_arrival > cur_arrival:
+                        single_date = datetime.now().strftime('%Y-%m-%d')
+                    arrival_date = single_date
+                    final_date = None  # 豫光没有尾款日期
+
                 # 确定payment_detail总状态
                 if new_paid >= total_amount:
                     payment_status = PaymentStatus.PAID
@@ -1259,18 +1304,17 @@ class PaymentService:
                     payment_status = PaymentStatus.UNPAID
 
                 # 更新收款明细
-                cur.execute(f"""
-                    UPDATE {PaymentService.TABLE_NAME}
-                    SET arrival_paid_amount = %s,
-                        final_paid_amount = %s,
-                        paid_amount = %s,
-                        unpaid_amount = %s,
-                        collection_status = %s,
-                        status = %s,
-                        is_paid = CASE WHEN %s > 0 THEN 1 ELSE 0 END,
-                        updated_at = %s
-                    WHERE id = %s
-                """, (
+                update_fields = [
+                    "arrival_paid_amount = %s",
+                    "final_paid_amount = %s", 
+                    "paid_amount = %s",
+                    "unpaid_amount = %s",
+                    "collection_status = %s",
+                    "status = %s",
+                    "is_paid = CASE WHEN %s > 0 THEN 1 ELSE 0 END",
+                    "updated_at = %s"
+                ]
+                params = [
                     float(new_arrival),
                     float(new_final),
                     float(new_paid),
@@ -1278,49 +1322,129 @@ class PaymentService:
                     collection_status,
                     int(payment_status),
                     float(new_paid),
-                    datetime.now(),
-                    payment_id
-                ))
-
+                    datetime.now()
+                ]
+                
+                # 检查并更新日期字段
+                cur.execute(f"SHOW COLUMNS FROM {PaymentService.TABLE_NAME} LIKE 'arrival_payment_date'")
+                has_arrival_date_col = cur.fetchone() is not None
+                cur.execute(f"SHOW COLUMNS FROM {PaymentService.TABLE_NAME} LIKE 'final_payment_date'")
+                has_final_date_col = cur.fetchone() is not None
+                
+                if has_arrival_date_col and arrival_date:
+                    update_fields.append("arrival_payment_date = %s")
+                    params.append(arrival_date)
+                if has_final_date_col and final_date:
+                    update_fields.append("final_payment_date = %s")
+                    params.append(final_date)
+                    
+                params.append(payment_id)
+                
+                # ✅ 构建并执行 UPDATE SQL
+                update_sql = f"""
+                    UPDATE {_quote_identifier(PaymentService.TABLE_NAME)}
+                    SET {', '.join(update_fields)}
+                    WHERE id = %s
+                """
+                cur.execute(update_sql, tuple(params))
+                
                 # 同步更新回款记录
-                # 更新首笔记录
-                if arrival_paid_amount is not None:
+                # 更新首笔记录（阶段0）
+                if arrival_paid_amount is not None or (is_jinli and arrival_payment_date) or (not is_jinli and payment_date):
                     cur.execute(f"""
-                        UPDATE {PaymentService.RECORD_TABLE}
-                        SET payment_amount = %s,
-                            payment_date = COALESCE(%s, payment_date),
-                            remark = COALESCE(%s, remark),
-                            recorded_by = COALESCE(%s, recorded_by)
+                        SELECT id, payment_date FROM {PaymentService.RECORD_TABLE}
                         WHERE payment_detail_id = %s AND payment_stage = 0
-                    """, (
-                        float(new_arrival),
-                        payment_date,
-                        remark or "到货款回款",
-                        updated_by,
-                        payment_id
-                    ))
+                    """, (payment_id,))
+                    arrival_record = cur.fetchone()
+                    
+                    record_date = arrival_date or datetime.now().strftime('%Y-%m-%d')
+                    
+                    if arrival_record:
+                        # 更新现有记录
+                        cur.execute(f"""
+                            UPDATE {_quote_identifier(PaymentService.RECORD_TABLE)}
+                            SET payment_amount = %s,
+                                payment_date = %s,
+                                remark = COALESCE(%s, remark),
+                                recorded_by = COALESCE(%s, recorded_by),
+                                updated_at = %s
+                            WHERE id = %s
+                        """, (
+                            float(new_arrival),
+                            record_date,
+                            remark or ("到货款回款" if is_jinli else "回款录入"),
+                            updated_by,
+                            datetime.now(),
+                            arrival_record['id']
+                        ))
+                    elif new_arrival > 0:
+                        # 创建新记录
+                        cur.execute(f"""
+                            INSERT INTO {_quote_identifier(PaymentService.RECORD_TABLE)}
+                            (payment_detail_id, payment_amount, payment_stage, payment_date, 
+                             payment_method, remark, recorded_by, created_at)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                        """, (
+                            payment_id, 
+                            float(new_arrival), 
+                            0,
+                            record_date,
+                            "银行转账",
+                            remark or ("到货款回款" if is_jinli else "回款录入"),
+                            updated_by,
+                            datetime.now()
+                        ))
 
-                # 更新尾款记录
-                if final_paid_amount is not None:
+                # 更新尾款记录（阶段2）- 仅金利有
+                if is_jinli and (final_paid_amount is not None or final_payment_date):
                     cur.execute(f"""
-                        UPDATE {PaymentService.RECORD_TABLE}
-                        SET payment_amount = %s,
-                            payment_date = COALESCE(%s, payment_date),
-                            remark = COALESCE(%s, remark),
-                            recorded_by = COALESCE(%s, recorded_by)
+                        SELECT id FROM {PaymentService.RECORD_TABLE}
                         WHERE payment_detail_id = %s AND payment_stage = 2
-                    """, (
-                        float(new_final),
-                        payment_date,
-                        remark or "尾款回款",
-                        updated_by,
-                        payment_id
-                    ))
+                    """, (payment_id,))
+                    final_record = cur.fetchone()
+                    
+                    record_date = final_date or datetime.now().strftime('%Y-%m-%d')
+                    
+                    if final_record:
+                        cur.execute(f"""
+                            UPDATE {_quote_identifier(PaymentService.RECORD_TABLE)}
+                            SET payment_amount = %s,
+                                payment_date = %s,
+                                remark = COALESCE(%s, remark),
+                                recorded_by = COALESCE(%s, recorded_by),
+                                updated_at = %s
+                            WHERE id = %s
+                        """, (
+                            float(new_final),
+                            record_date,
+                            remark or "尾款回款",
+                            updated_by,
+                            datetime.now(),
+                            final_record['id']
+                        ))
+                    elif new_final > 0:
+                        # 创建新记录
+                        cur.execute(f"""
+                            INSERT INTO {_quote_identifier(PaymentService.RECORD_TABLE)}
+                            (payment_detail_id, payment_amount, payment_stage, payment_date,
+                             payment_method, remark, recorded_by, created_at)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                        """, (
+                            payment_id,
+                            float(new_final),
+                            2,
+                            record_date,
+                            "银行转账",
+                            remark or "尾款回款",
+                            updated_by,
+                            datetime.now()
+                        ))
 
                 conn.commit()
 
                 return {
                     "payment_id": payment_id,
+                    "is_jinli": is_jinli,
                     "arrival_paid_amount": float(new_arrival),
                     "final_paid_amount": float(new_final),
                     "paid_amount": float(new_paid),
@@ -1328,7 +1452,9 @@ class PaymentService:
                     "collection_status": collection_status,
                     "collection_status_name": status_name,
                     "payment_status": int(payment_status),
-                    "last_payment_date": payment_date,
+                    "arrival_payment_date": arrival_date,
+                    "final_payment_date": final_date if is_jinli else None,
+                    "last_payment_date": final_date or arrival_date,
                     "message": "回款更新成功"
                 }
     @staticmethod
