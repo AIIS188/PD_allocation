@@ -1152,6 +1152,26 @@ class PaymentService:
                         -- ========== 其他必要字段 ==========
                         pd.id as payment_detail_id,
                         b.id as balance_id,
+                        (
+                            SELECT pr.id
+                            FROM pd_receipt_settlements rs
+                            JOIN pd_payment_receipts pr ON pr.id = rs.receipt_id
+                            WHERE rs.balance_id = b.id
+                            ORDER BY pr.created_at DESC, pr.id DESC
+                            LIMIT 1
+                        ) as payment_receipt_id,
+                        (
+                            SELECT GROUP_CONCAT(pr.id ORDER BY pr.created_at DESC, pr.id DESC)
+                            FROM pd_receipt_settlements rs
+                            JOIN pd_payment_receipts pr ON pr.id = rs.receipt_id
+                            WHERE rs.balance_id = b.id
+                        ) as payment_receipt_ids,
+                        (
+                            SELECT COUNT(*)
+                            FROM pd_receipt_settlements rs
+                            JOIN pd_payment_receipts pr ON pr.id = rs.receipt_id
+                            WHERE rs.balance_id = b.id
+                        ) as payment_receipt_count,
                         wb.id as weighbill_id,
                         d.id as delivery_id,
                         {unpaid_amount_select} as 未打款金额,
@@ -1182,6 +1202,18 @@ class PaymentService:
                 items = []
                 for row in rows:
                     item = dict(row)
+
+                    receipt_ids_raw = item.get('payment_receipt_ids')
+                    if receipt_ids_raw:
+                        item['payment_receipt_ids'] = [int(receipt_id) for receipt_id in str(receipt_ids_raw).split(',') if receipt_id]
+                    else:
+                        item['payment_receipt_ids'] = []
+
+                    if item.get('payment_receipt_id') is not None:
+                        item['payment_receipt_id'] = int(item['payment_receipt_id'])
+
+                    if item.get('payment_receipt_count') is not None:
+                        item['payment_receipt_count'] = int(item['payment_receipt_count'])
                     
                     # 转换时间字段为字符串
                     time_fields = ['排款日期', '打款日期', '报单日期', '磅单日期', '回款日期', 'created_at', 'updated_at']
