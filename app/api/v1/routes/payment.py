@@ -366,7 +366,7 @@ class PaymentExcelImportResp(BaseModel):
     details: List[dict]
 # ========== 路由定义 ==========
 
-router = APIRouter(tags=["PD收款明细管理"])
+router = APIRouter(tags=["收款明细管理"])
 
 
 def register_pd_payment_routes(app):
@@ -983,7 +983,7 @@ def create_payment_by_weighbill(
         logger.exception("手动创建回款信息异常")
         raise HTTPException(status_code=500, detail=f"创建失败: {str(e)}")
     
-@router.post("/upload-excel", response_model=UploadResponse)
+@router.post("/upload-excel", summary="上传回款 Excel 文件", response_model=UploadResponse)
 async def upload_payment_excel(
     file: UploadFile = File(..., description="回款明细Excel文件"),
     remark: Optional[str] = Form(None, description="备注说明"),
@@ -1108,7 +1108,7 @@ async def upload_payment_excel(
     )
 
 
-@router.get("/uploads", response_model=dict)
+@router.get("/uploads", summary="查询已上传文件", response_model=dict)
 async def list_uploaded_files(
     page: int = 1,
     page_size: int = 20,
@@ -1153,7 +1153,7 @@ async def list_uploaded_files(
         raise HTTPException(status_code=500, detail=f"查询失败: {str(e)}")
 
 
-@router.get("/uploads/{filename}")
+@router.get("/uploads/{filename}", summary="查看已上传文件")
 async def download_uploaded_file(
     filename: str,
     current_user: dict = Depends(get_current_user)
@@ -1173,7 +1173,7 @@ async def download_uploaded_file(
     )
 
 
-@router.delete("/uploads/{filename}")
+@router.delete("/uploads/{filename}", summary="删除已上传文件")
 async def delete_uploaded_file(
     filename: str,
     current_user: dict = Depends(get_current_user)

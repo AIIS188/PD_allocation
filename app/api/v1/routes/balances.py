@@ -220,7 +220,7 @@ class PayeeBalanceDetailOut(BalanceOut):
     weigh_net_weight: Optional[float] = None
 # ========== 路由 ==========
 
-@router.post("/generate")
+@router.post("/generate", summary="生成结余明细")
 async def generate_balance(
         contract_no: Optional[str] = Query(None, description="指定合同编号"),
         delivery_id: Optional[int] = Query(None, description="指定报货订单"),
@@ -238,7 +238,7 @@ async def generate_balance(
         raise HTTPException(status_code=400, detail=result.get("error"))
 
 
-@router.get("/", response_model=dict)
+@router.get("/", summary="查询结余明细列表", response_model=dict)
 async def list_balances(
         exact_contract_no: Optional[str] = Query(None, description="精确合同编号"),
         exact_driver_name: Optional[str] = Query(None, description="精确司机姓名"),
@@ -259,7 +259,7 @@ async def list_balances(
     )
 
 
-@router.get("/grouped", response_model=dict)
+@router.get("/grouped", summary="查询打款分组列表", response_model=dict)
 async def list_balances_grouped(
         exact_contract_no: Optional[str] = Query(None, description="精确合同编号"),
         exact_driver_name: Optional[str] = Query(None, description="精确司机姓名"),
@@ -308,7 +308,7 @@ async def list_balances_grouped(
         raise HTTPException(status_code=400, detail=result.get("error"))
 
 
-@router.put("/{balance_id}/payment", response_model=dict)
+@router.put("/{balance_id}/payment", summary="录入打款信息", response_model=dict)
 async def update_balance_payment(
         balance_id: int,
         paid_amount: float = Form(..., description="已打款金额"),
@@ -449,7 +449,7 @@ async def update_balance_payment(
         raise HTTPException(status_code=500, detail=f"更新失败: {str(e)}")
 
 
-@router.post("/payment-receipts/ocr", response_model=PaymentReceiptOCRResponse)
+@router.post("/payment-receipts/ocr", summary="OCR 识别支付回单", response_model=PaymentReceiptOCRResponse)
 async def ocr_payment_receipt(
         file: UploadFile = File(..., description="支付回单图片"),
         service: BalanceService = Depends(get_balance_service)
@@ -488,7 +488,7 @@ async def ocr_payment_receipt(
         raise HTTPException(status_code=500, detail=f"处理失败: {str(e)}")
 
 
-@router.post("/payment-receipts", response_model=dict)
+@router.post("/payment-receipts", summary="保存支付回单", response_model=dict)
 async def create_payment_receipt(
     request: Optional[PaymentReceiptCreateRequest] = Body(None),
     request_json: Optional[str] = Form(None, description="回单数据JSON字符串"),
@@ -539,7 +539,7 @@ async def create_payment_receipt(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/match/pending")
+@router.get("/match/pending", summary="匹配待支付结余")
 async def match_pending(
         payee_name: str = Query(..., description="收款人姓名（司机）"),
         amount: float = Query(..., description="支付金额"),
@@ -558,7 +558,7 @@ async def match_pending(
     }
 
 
-@router.post("/verify-payment", response_model=dict)
+@router.post("/verify-payment", summary="核销支付回单", response_model=dict)
 async def verify_payment(
         receipt_id: int = Form(..., description="支付回单ID"),
         items: List[SettlementItem] = Body(..., description="核销明细列表"),
@@ -587,6 +587,7 @@ async def verify_payment(
 
 @router.get(
     "/payment-receipts/{receipt_id}/image",
+    summary="查看支付回单图片",
     responses={
         200: {
             "content": {
@@ -629,7 +630,7 @@ async def get_payment_receipt_image(
         headers={"Content-Disposition": f'inline; filename="{full_path.name}"'}
     )
 
-@router.get("/payment-receipts/{receipt_id}")
+@router.get("/payment-receipts/{receipt_id}", summary="查看支付回单详情")
 async def get_payment_receipt(
         receipt_id: int,
         service: BalanceService = Depends(get_balance_service)
@@ -646,7 +647,7 @@ async def get_payment_receipt(
     return receipt
 
 
-@router.get("/payment-receipts", response_model=PaymentReceiptListResp)
+@router.get("/payment-receipts", summary="查询支付回单列表", response_model=PaymentReceiptListResp)
 async def list_payment_receipts(
         exact_payee_name: Optional[str] = Query(None, description="精确收款人姓名"),
         exact_ocr_status: Optional[int] = Query(None, ge=0, le=2, description="状态：0待确认/1已确认/2已核销"),
@@ -682,7 +683,7 @@ async def list_payment_receipts(
         raise HTTPException(status_code=500, detail=result.get("error"))
 
 
-@router.get("/summary/by-payee", response_model=dict)
+@router.get("/summary/by-payee", summary="按收款人汇总结余", response_model=dict)
 async def list_balance_by_payee(
     payee_name: Optional[str] = Query(None, description="精确收款人姓名"),
     driver_phone: Optional[str] = Query(None, description="精确司机电话"),
@@ -737,7 +738,7 @@ async def list_balance_by_payee(
         raise HTTPException(status_code=400, detail=result.get("error"))
 
 
-@router.get("/summary/by-shipper", response_model=dict)
+@router.get("/summary/by-shipper", summary="按报单人汇总结余", response_model=dict)
 async def list_balance_by_reporter(
     reporter_name: Optional[str] = Query(None, description="精确报单人/发货人"),
     fuzzy_keywords: Optional[str] = Query(None, description="模糊关键词（姓名/电话/车牌/合同号）"),
@@ -772,7 +773,7 @@ async def list_balance_by_reporter(
         raise HTTPException(status_code=400, detail=result.get("error"))
 
 
-@router.get("/summary/by-payee/{payee_name}/details", response_model=dict)
+@router.get("/summary/by-payee/{payee_name}/details", summary="查看收款人结余明细", response_model=dict)
 async def get_payee_balance_details(
         payee_name: str,
         driver_phone: Optional[str] = Query(None, description="司机电话（精确匹配）"),
@@ -800,7 +801,7 @@ async def get_payee_balance_details(
         raise HTTPException(status_code=404, detail=result.get("error"))
 
 
-@router.post("/summary/by-payee/{payee_name}/batch-verify", response_model=dict)
+@router.post("/summary/by-payee/{payee_name}/batch-verify", summary="按收款人批量核销", response_model=dict)
 async def batch_verify_by_payee(
         payee_name: str,
         receipt_id: int = Form(..., description="支付回单ID"),
@@ -827,7 +828,7 @@ async def batch_verify_by_payee(
         raise HTTPException(status_code=400, detail=result.get("error"))
 
 
-@router.get("/summary/by-shipper/{reporter_name}/details", response_model=dict)
+@router.get("/summary/by-shipper/{reporter_name}/details", summary="查看报单人结余明细", response_model=dict)
 async def get_reporter_balance_details(
         reporter_name: str,
         payment_status: Optional[int] = Query(None, description="0=待支付, 1=部分支付"),
@@ -851,7 +852,7 @@ async def get_reporter_balance_details(
         return result
     else:
         raise HTTPException(status_code=404, detail=result.get("error"))
-@router.get("/{balance_id}", response_model=BalanceOut)
+@router.get("/{balance_id}", summary="查看结余明细详情", response_model=BalanceOut)
 async def get_balance(
         balance_id: int,
         service: BalanceService = Depends(get_balance_service)

@@ -19,7 +19,7 @@ class ProductCategoryDeleteRequest(BaseModel):
     category_name: str = Field(..., description="要删除的品类名称", min_length=1, max_length=64)
 
 
-@router.get("/", response_model=dict)
+@router.get("/", summary="查询品类列表", response_model=dict)
 async def list_product_categories(
     service: ProductCategoryService = Depends(get_product_category_service),
 ):
@@ -30,7 +30,7 @@ async def list_product_categories(
     raise HTTPException(status_code=500, detail=result.get("error", "查询品类列表失败"))
 
 
-@router.post("/", response_model=dict)
+@router.post("/", summary="新增品类", response_model=dict)
 async def add_product_category(
     request: ProductCategoryCreateRequest,
     service: ProductCategoryService = Depends(get_product_category_service),
@@ -42,7 +42,7 @@ async def add_product_category(
     raise HTTPException(status_code=400, detail=result.get("error", "新增品类失败"))
 
 
-@router.delete("/", response_model=dict)
+@router.delete("/", summary="删除品类", response_model=dict)
 async def delete_product_category(
     request: ProductCategoryDeleteRequest,
     service: ProductCategoryService = Depends(get_product_category_service),

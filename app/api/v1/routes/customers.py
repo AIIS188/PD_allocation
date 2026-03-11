@@ -66,7 +66,7 @@ class CustomerOut(BaseModel):
 
 # ============ 路由 ============
 
-@router.post("/", response_model=dict)
+@router.post("/", summary="新增客户", response_model=dict)
 async def create_customer(
         request: CustomerCreateRequest,
         service: CustomerService = Depends(get_customer_service)
@@ -95,7 +95,7 @@ async def create_customer(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/", response_model=dict)
+@router.get("/", summary="查询客户列表", response_model=dict)
 async def list_customers(
         exact_smelter_name: Optional[str] = Query(None, description="精确冶炼厂名称"),
         exact_contact_person: Optional[str] = Query(None, description="精确联系人"),
@@ -140,7 +140,7 @@ async def list_warehouse_payees(
     raise HTTPException(status_code=500, detail=result.get("error", "查询库房收款员信息失败"))
 
 
-@router.get("/{customer_id}", response_model=CustomerOut)
+@router.get("/{customer_id}", summary="查看客户详情", response_model=CustomerOut)
 async def get_customer(
         customer_id: int,
         service: CustomerService = Depends(get_customer_service)
@@ -158,7 +158,7 @@ async def get_customer(
     return customer
 
 
-@router.put("/{customer_id}", response_model=dict)
+@router.put("/{customer_id}", summary="编辑客户信息", response_model=dict)
 async def update_customer(
         customer_id: int,
         request: CustomerUpdateRequest,
@@ -193,7 +193,7 @@ async def update_customer(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.delete("/{customer_id}")
+@router.delete("/{customer_id}", summary="删除客户")
 async def delete_customer(
         customer_id: int,
         service: CustomerService = Depends(get_customer_service)

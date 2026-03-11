@@ -7,7 +7,7 @@ from pydantic import BaseModel
 def load_settings() -> "Settings":
     load_dotenv()
     return Settings(
-        app_name=os.getenv("APP_NAME", "PD API"),
+        app_name=os.getenv("APP_NAME", "采购配送管理接口"),
         jwt_secret=os.getenv("JWT_SECRET", "change-me"),
         jwt_algorithm=os.getenv("JWT_ALGORITHM", "HS256"),
         db_url=os.getenv(

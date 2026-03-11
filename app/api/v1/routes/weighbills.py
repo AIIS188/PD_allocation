@@ -163,7 +163,7 @@ class WeighbillBatchUploadResponse(BaseModel):
 
 # ============ 路由 ============
 
-@router.post("/ocr", response_model=WeighbillOCRResponse)
+@router.post("/ocr", summary="OCR 识别磅单", response_model=WeighbillOCRResponse)
 async def ocr_weighbill(
         file: UploadFile = File(..., description="磅单图片"),
         auto_match: bool = Query(True, description="是否自动关联匹配"),
@@ -206,7 +206,7 @@ async def ocr_weighbill(
         raise HTTPException(status_code=500, detail=f"处理失败: {str(e)}")
 
 
-@router.post("/create", response_model=dict)
+@router.post("/create", summary="上传磅单", response_model=dict)
 async def upload_weighbill(
         delivery_id: int = Form(..., description="报单ID"),
         product_name: str = Form(..., description="品种名称"),
@@ -336,7 +336,7 @@ async def upload_weighbill(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.put("/modify", response_model=dict)
+@router.put("/modify", summary="修改磅单", response_model=dict)
 async def modify_weighbill(
         weighbill_id: int = Form(..., description="磅单ID"),
     matched_delivery_id: Optional[int] = Form(None, description="匹配的报单ID"),
@@ -468,7 +468,7 @@ async def modify_weighbill(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/", response_model=dict)
+@router.get("/", summary="查询磅单列表", response_model=dict)
 async def list_weighbills(
     exact_delivery_id: Optional[int] = Query(None, description="精确报单ID"),
     exact_weighbill_id: Optional[int] = Query(None, description="精确磅单ID"),
@@ -510,7 +510,7 @@ async def list_weighbills(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/{weighbill_id}", response_model=WeighbillOut)
+@router.get("/{weighbill_id}", summary="查看磅单详情", response_model=WeighbillOut)
 async def get_weighbill(
         weighbill_id: int,
         service: WeighbillService = Depends(get_weighbill_service)
@@ -522,7 +522,7 @@ async def get_weighbill(
     return bill
 
 
-@router.get("/delivery/{delivery_id}", response_model=WeighbillGroupOut)
+@router.get("/delivery/{delivery_id}", summary="查看报单下的磅单列表", response_model=WeighbillGroupOut)
 async def get_weighbills_by_delivery(
         delivery_id: int,
         service: WeighbillService = Depends(get_weighbill_service)
@@ -543,7 +543,7 @@ async def get_weighbills_by_delivery(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.delete("/{weighbill_id}")
+@router.delete("/{weighbill_id}", summary="删除磅单")
 async def delete_weighbill(
         weighbill_id: int,
         service: WeighbillService = Depends(get_weighbill_service)
@@ -573,7 +573,7 @@ async def delete_weighbill(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/{weighbill_id}/image")
+@router.get("/{weighbill_id}/image", summary="查看磅单图片")
 async def get_weighbill_image(
         weighbill_id: int,
         service: WeighbillService = Depends(get_weighbill_service)
@@ -603,7 +603,7 @@ async def get_weighbill_image(
         raise HTTPException(status_code=500, detail=f"获取图片失败: {str(e)}")
 
 
-@router.put("/{weighbill_id}/payment-schedule", response_model=dict)
+@router.put("/{weighbill_id}/payment-schedule", summary="设置排款日期", response_model=dict)
 async def set_payment_schedule(
         weighbill_id: int,
         request: PaymentScheduleRequest,
@@ -646,8 +646,8 @@ async def batch_upload_weighbills(
     
     每张磅单自动：
     - OCR识别：日期、车号、合同号、品种、重量等
-    - 匹配报单：根据【日期+车牌号】匹配 pd_deliveries
-    - 获取单价：根据合同号+品种查询 pd_contract_products
+    - 匹配报单：根据【日期 + 车牌号】自动关联报货订单
+    - 获取单价：根据合同号和品种自动匹配单价
     - 创建收款明细和结余明细（复用单条上传的逻辑）
     """
     try:

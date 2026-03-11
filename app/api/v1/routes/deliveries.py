@@ -113,7 +113,7 @@ class BatchDeliveryOrderResponse(BaseModel):
     results: List[BatchUploadResult] = Field(..., description="详细结果列表")
 # ============ 路由 ============
 
-@router.post("/", response_model=dict)
+@router.post("/", summary="新增报货订单", response_model=dict)
 async def create_delivery(
         report_date: str = Form(...),
         target_factory_id: Optional[int] = Form(None),
@@ -204,7 +204,7 @@ class DeliveryCreateJsonRequest(BaseModel):
     confirm_flag: bool = Field(False, description="二次确认标志")
 
 
-@router.post("/json", response_model=dict)
+@router.post("/json", summary="JSON 新增报货订单", response_model=dict)
 async def create_delivery_json(
         body: DeliveryCreateJsonRequest,
         service: DeliveryService = Depends(get_delivery_service),
@@ -237,7 +237,7 @@ async def create_delivery_json(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-@router.get("/", response_model=dict)
+@router.get("/", summary="查询报货订单列表", response_model=dict)
 async def list_deliveries(
     exact_delivery_id: Optional[int] = Query(None, description="精确报单ID"),
     exact_shipper: Optional[str] = Query(None, description="精确发货人/报单人"),
@@ -282,7 +282,7 @@ async def list_deliveries(
     )
 
 
-@router.get("/{delivery_id}", response_model=DeliveryOut)
+@router.get("/{delivery_id}", summary="查看报货订单详情", response_model=DeliveryOut)
 async def get_delivery(
         delivery_id: int,
         service: DeliveryService = Depends(get_delivery_service)
@@ -294,7 +294,7 @@ async def get_delivery(
     return delivery
 
 
-@router.put("/{delivery_id}", response_model=dict)
+@router.put("/{delivery_id}", summary="编辑报货订单", response_model=dict)
 async def update_delivery(
         delivery_id: int,
         request: DeliveryUpdateRequest,
@@ -321,7 +321,7 @@ async def update_delivery(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.delete("/{delivery_id}")
+@router.delete("/{delivery_id}", summary="删除报货订单")
 async def delete_delivery(
         delivery_id: int,
         service: DeliveryService = Depends(get_delivery_service)
@@ -334,7 +334,7 @@ async def delete_delivery(
         raise HTTPException(status_code=400, detail=result.get("error"))
 
 
-@router.post("/{delivery_id}/upload-order")
+@router.post("/{delivery_id}/upload-order", summary="上传联单图片")
 async def upload_delivery_order(
         delivery_id: int,
         image: UploadFile = File(..., description="联单图片"),
@@ -374,7 +374,7 @@ async def upload_delivery_order(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.put("/{delivery_id}/modify-order")
+@router.put("/{delivery_id}/modify-order", summary="修改联单图片")
 async def modify_delivery_order(
         delivery_id: int,
         image: UploadFile = File(..., description="新的联单图片"),
@@ -414,7 +414,7 @@ async def modify_delivery_order(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.delete("/{delivery_id}/image")
+@router.delete("/{delivery_id}/image", summary="删除联单图片")
 async def delete_delivery_image(
     delivery_id: int,
     service: DeliveryService = Depends(get_delivery_service)
@@ -427,7 +427,7 @@ async def delete_delivery_image(
         raise HTTPException(status_code=400, detail=result.get("error"))
 
 
-@router.get("/{delivery_id}/view-order")
+@router.get("/{delivery_id}/view-order", summary="查看联单图片")
 async def view_delivery_order(
     delivery_id: int,
     service: DeliveryService = Depends(get_delivery_service)
@@ -457,7 +457,7 @@ async def view_delivery_order(
         raise HTTPException(status_code=500, detail=f"获取联单图片失败: {str(e)}")
 
 
-@router.get("/{delivery_id}/image")
+@router.get("/{delivery_id}/image", summary="查看联单图片（兼容旧接口）")
 async def get_delivery_image(
     delivery_id: int,
     service: DeliveryService = Depends(get_delivery_service)
@@ -466,7 +466,7 @@ async def get_delivery_image(
     return await view_delivery_order(delivery_id, service)
 
 
-@router.post("/batch-upload-orders", response_model=BatchDeliveryOrderResponse)
+@router.post("/batch-upload-orders", summary="批量上传联单图片", response_model=BatchDeliveryOrderResponse)
 async def batch_upload_delivery_orders(
         files: List[UploadFile] = File(..., description="联单图片列表（与delivery_ids一一对应）"),
         delivery_ids: str = Form(..., description="报单ID列表，字符串，如：[1,2,3]"),

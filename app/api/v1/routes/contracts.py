@@ -104,7 +104,7 @@ class ContractOut(BaseModel):
 
 # ============ 路由 ============
 
-@router.post("/ocr", response_model=ContractOCRResponse)
+@router.post("/ocr", summary="OCR 识别合同", response_model=ContractOCRResponse)
 async def ocr_recognize(
     file: UploadFile = File(..., description="合同图片"),
     auto_save: bool = Query(True, description="是否自动保存（默认true，OCR可能不完整）"),
@@ -213,7 +213,7 @@ async def ocr_recognize(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/manual", response_model=ContractOut)
+@router.post("/manual", summary="手动录入合同", response_model=ContractOut)
 async def create_manual(
     contract_data: str = Form(..., description="合同数据JSON字符串"),
     file: Optional[UploadFile] = File(None, description="合同图片（可选）"),
@@ -316,7 +316,7 @@ async def create_manual(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/", response_model=dict)
+@router.get("/", summary="查询合同列表", response_model=dict)
 async def list_contracts(
     exact_contract_no: Optional[str] = Query(None, description="精确合同编号"),
     exact_smelter_company: Optional[str] = Query(None, description="精确冶炼厂"),
@@ -341,7 +341,7 @@ async def list_contracts(
     )
 
 
-@router.get("/id/{contract_id:int}", response_model=ContractOut)
+@router.get("/id/{contract_id:int}", summary="查看合同详情", response_model=ContractOut)
 async def get_contract(
     contract_id: int,
     service: ContractService = Depends(get_contract_service)
@@ -353,7 +353,7 @@ async def get_contract(
     return detail
 
 
-@router.put("/id/{contract_id:int}", response_model=dict)
+@router.put("/id/{contract_id:int}", summary="编辑合同", response_model=dict)
 async def update_contract(
     contract_id: int,
     contract_data: Optional[str] = Form(None, description="合同数据JSON字符串"),
@@ -483,7 +483,7 @@ async def update_contract(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/id/{contract_id:int}/image")
+@router.get("/id/{contract_id:int}/image", summary="查看合同图片")
 async def get_contract_image(
         contract_id: int,
         service: ContractService = Depends(get_contract_service)
@@ -516,7 +516,7 @@ async def get_contract_image(
         raise HTTPException(status_code=500, detail=f"获取图片失败: {str(e)}")
 
 
-@router.delete("/id/{contract_id:int}")
+@router.delete("/id/{contract_id:int}", summary="删除合同")
 async def delete_contract(
     contract_id: int,
     service: ContractService = Depends(get_contract_service)
@@ -536,7 +536,7 @@ async def delete_contract(
         raise HTTPException(status_code=400, detail=result.get("error"))
 
 
-@router.post("/export")
+@router.post("/export", summary="导出合同")
 async def export_contracts(
     contract_ids: List[int] = Body(None, description="要导出的合同ID列表，空则导出全部"),
     service: ContractService = Depends(get_contract_service)

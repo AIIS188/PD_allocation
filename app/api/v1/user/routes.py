@@ -96,7 +96,7 @@ class PermissionListQuery(BaseModel):
 
 # ========== 路由定义 ==========
 
-router = APIRouter(tags=["PD用户认证"])
+router = APIRouter(tags=["用户认证与权限"])
 
 
 def register_pd_auth_routes(app):
