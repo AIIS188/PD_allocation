@@ -1212,26 +1212,37 @@ class WeighbillService:
                         if wb.get("warehouse_name") is None:
                             wb["warehouse_name"] = wb.get("warehouse")
 
-                        # ========== 新增：计算应付金额和回款金额 ==========
+                        # ========== 新增：计算应付单价、应付金额和回款金额 ==========
                         unit_price_val = wb.get("unit_price")
                         net_weight_val = wb.get("net_weight")
                         service_fee_val = wb.get("service_fee") or 0
 
-                        if unit_price_val and net_weight_val:
+                        if unit_price_val:
                             unit_price_d = Decimal(str(unit_price_val))
-                            net_weight_d = Decimal(str(net_weight_val))
-                            service_fee_d = Decimal(str(service_fee_val))
 
-                            # 应付金额 = 合同单价 / 1.048 * 磅单净重 - 联单费
-                            payable_calc = (unit_price_d / Decimal('1.048') * net_weight_d - service_fee_d).quantize(
-                                Decimal('0.01'), rounding=ROUND_HALF_UP)
-                            wb["payable_amount_calculated"] = float(payable_calc)
+                            # 应付单价 = 合同单价 / 1.048
+                            payable_unit_price = (unit_price_d / Decimal('1.048')).quantize(Decimal('0.01'),
+                                                                                            rounding=ROUND_HALF_UP)
+                            wb["payable_unit_price"] = float(payable_unit_price)
 
-                            # 回款金额 = 合同单价 * 磅单净重 - 联单费
-                            receivable_calc = (unit_price_d * net_weight_d - service_fee_d).quantize(Decimal('0.01'),
-                                                                                                     rounding=ROUND_HALF_UP)
-                            wb["receivable_amount_calculated"] = float(receivable_calc)
+                            if net_weight_val:
+                                net_weight_d = Decimal(str(net_weight_val))
+                                service_fee_d = Decimal(str(service_fee_val))
+
+                                # 应付金额 = 应付单价 * 磅单净重 - 联单费
+                                payable_calc = (payable_unit_price * net_weight_d - service_fee_d).quantize(
+                                    Decimal('0.01'), rounding=ROUND_HALF_UP)
+                                wb["payable_amount_calculated"] = float(payable_calc)
+
+                                # 回款金额 = 合同单价 * 磅单净重 - 联单费
+                                receivable_calc = (unit_price_d * net_weight_d - service_fee_d).quantize(
+                                    Decimal('0.01'), rounding=ROUND_HALF_UP)
+                                wb["receivable_amount_calculated"] = float(receivable_calc)
+                            else:
+                                wb["payable_amount_calculated"] = None
+                                wb["receivable_amount_calculated"] = None
                         else:
+                            wb["payable_unit_price"] = None
                             wb["payable_amount_calculated"] = None
                             wb["receivable_amount_calculated"] = None
                         # ========== 新增结束 ==========
@@ -1243,7 +1254,7 @@ class WeighbillService:
                             net_weight = Decimal(str(wb.get("net_weight") or 0))
                             unit_price = Decimal(str(wb.get("unit_price") or 0))
                             wb["payable_amount"] = float(
-                                (net_weight * unit_price / Decimal('1.03')).quantize(Decimal('0.01'),
+                                (net_weight * unit_price / Decimal('1.048')).quantize(Decimal('0.01'),
                                                                                      rounding=ROUND_HALF_UP)
                             )
 
@@ -1309,6 +1320,7 @@ class WeighbillService:
                                     "ocr_status": "待上传磅单",
                                     "ocr_status_display": "待上传磅单",
                                     "upload_status": "待上传",
+                                    "payable_unit_price": None,
                                     "payable_amount_calculated": None,
                                     "receivable_amount_calculated": None,
                                     "operations": {"can_upload": True, "can_modify": False, "can_view": False}

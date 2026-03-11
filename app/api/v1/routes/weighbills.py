@@ -109,8 +109,9 @@ class WeighbillOut(BaseModel):
     service_fee: Optional[float] = None
     operations: Optional[dict] = None
     # 新增计算字段
-    payable_amount_calculated: Optional[float] = Field(None, description="应付金额（计算值）= 合同单价/1.048*净重-联单费")
-    receivable_amount_calculated: Optional[float] = Field(None, description="回款金额（计算值）= 合同单价*净重-联单费")
+    payable_unit_price: Optional[float] = Field(None, description="应付单价 = 合同单价/1.048")
+    payable_amount_calculated: Optional[float] = Field(None, description="应付金额 = 应付单价*净重-联单费")
+    receivable_amount_calculated: Optional[float] = Field(None, description="回款金额 = 合同单价*净重-联单费")
 
 
 class WeighbillGroupOut(BaseModel):
@@ -550,6 +551,8 @@ async def list_weighbills(
         payable_amount_calculated --应付金额
 
         receivable_amount_calculated --回款金额
+
+        payable_unit_price --应付单价=合同单价/1.048
     """
     try:
         return service.list_weighbills_grouped(

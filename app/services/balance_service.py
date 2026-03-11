@@ -211,7 +211,7 @@ class BalanceService:
                         unit_price = data.get('unit_price') or 0
                         # 应付金额按税率换算并保留两位小数
                         payable = (
-                            Decimal(str(net_weight)) * Decimal(str(unit_price)) / Decimal('1.03')
+                            Decimal(str(net_weight)) * Decimal(str(unit_price)) / Decimal('1.048')
                         ).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
 
                         # 确定收款人姓名：优先payee，否则driver_name

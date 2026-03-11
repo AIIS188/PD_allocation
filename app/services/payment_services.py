@@ -305,7 +305,7 @@ class PaymentService:
 
     @staticmethod
     def _payout_base_amount_sql() -> str:
-        return "ROUND((COALESCE(wb.unit_price, 0) * COALESCE(wb.net_weight, 0)) / 1.03, 2)"
+        return "ROUND((COALESCE(wb.unit_price, 0) * COALESCE(wb.net_weight, 0)) / 1.048, 2)"
 
     @staticmethod
     def resolve_payment_detail_id(
@@ -1195,13 +1195,13 @@ class PaymentService:
             end_date: Optional[date] = None,
             keyword: Optional[str] = None,
             # 打款列表筛选参数
-            is_paid_out: Optional[int] = None,           # 打款状态：0-待打款, 1-已打款
+            is_paid_out: Optional[int] = None,  # 打款状态：0-待打款, 1-已打款
             payment_schedule_date: Optional[str] = None,  # 排期日期
-            has_schedule: Optional[int] = None           # 是否已排期：0-待排期, 1-已排期
+            has_schedule: Optional[int] = None  # 是否已排期：0-待排期, 1-已排期
     ) -> Dict[str, Any]:
         """
         查询打款信息列表（打款排期列表）
-        
+
         只返回已排期的数据（有排期日期才能打款）
         表头包含采购相关的打款字段
         """
@@ -1289,9 +1289,15 @@ class PaymentService:
                 warehouse_payee_account_select = f"(SELECT wp.payee_account FROM pd_warehouse_payees wp WHERE wp.warehouse_name = {warehouse_select} AND wp.payee_name = {payee_select} AND wp.is_active = 1 ORDER BY wp.id ASC LIMIT 1)"
                 warehouse_payee_bank_select = f"(SELECT wp.payee_bank_name FROM pd_warehouse_payees wp WHERE wp.warehouse_name = {warehouse_select} AND wp.payee_name = {payee_select} AND wp.is_active = 1 ORDER BY wp.id ASC LIMIT 1)"
                 service_fee_select = PaymentService._service_fee_sql()
-                payout_base_amount_select = f"COALESCE(b.payable_amount, {PaymentService._payout_base_amount_sql()})"
-                payout_amount_select = f"GREATEST({payout_base_amount_select} - ({service_fee_select}), 0)"
-                unpaid_amount_select = f"GREATEST({payout_amount_select} - COALESCE(b.paid_amount, 0), 0)"
+
+                # ========== 修改：应付单价 = 合同单价 / 1.048 ==========
+                payable_unit_price_select = "(wb.unit_price / 1.048)"
+
+                # ========== 修改：应付金额 = 应付单价 * 净重 - 联单费 ==========
+                payout_amount_select = f"GREATEST(({payable_unit_price_select} * COALESCE(wb.net_weight, 0)) - ({service_fee_select}), 0)"
+
+                unpaid_amount_select = f"GREATEST(({payable_unit_price_select} * COALESCE(wb.net_weight, 0)) - ({service_fee_select}) - COALESCE(b.paid_amount, 0), 0)"
+
                 if has_payee_account:
                     payee_account_select = f"COALESCE(b.payee_account, pd.payee_account, {warehouse_payee_account_select})"
                 else:
@@ -1301,11 +1307,12 @@ class PaymentService:
                 else:
                     payee_bank_select = warehouse_payee_bank_select
                 is_paid_out_select = "COALESCE(b.payout_status, 0)"
+
                 query_sql = f"""
                     SELECT 
                         -- ========== 第一行：排期信息 ==========
                         wb.payment_schedule_date as 排款日期,
-                        
+
                         -- ========== 第二行：基础信息 ==========
                         pd.contract_no as 合同编号,
                         d.report_date as 报单日期,
@@ -1318,21 +1325,23 @@ class PaymentService:
                         d.upload_status as 是否上传联单,
                         d.shipper as 报单人发货人,
                         {warehouse_select} as 仓库,
-                        
+
                         -- ========== 第三行：磅单信息 ==========
                         wb.weigh_date as 磅单日期,
                         wb.weigh_ticket_no as 过磅单号,
                         wb.net_weight as 净重,
-                        
-                        -- ========== 第四行：打款信息（核心） ==========
-                        wb.unit_price as 采购单价,
-                        {payout_amount_select} as 应打款金额,
+
+                        -- ========== 第四行：打款信息（核心）==========
+                        -- ========== 修改：采购单价 -> 应付单价 ==========
+                        {payable_unit_price_select} as 应付单价,
+                        -- ========== 修改：应打款金额 -> 应付金额 ==========
+                        {payout_amount_select} as 应付金额,
                         COALESCE(b.paid_amount, 0) as 已打款金额,
                         {payee_select} as 收款人,
                         {payee_account_select} as 收款人账号,
                         {payee_bank_select} as 收款银行,
                         {service_fee_select} as 联单费,
-                        
+
                         -- ========== 第五行：回款信息（辅助） ==========
                         pd.arrival_payment_amount as 应回款首笔金额,
                         pd.final_payment_amount as 应回款尾款金额,
@@ -1340,7 +1349,7 @@ class PaymentService:
                         pd.final_paid_amount as 已回款尾款金额,
                         (SELECT MAX(pr.payment_date) FROM pd_payment_records pr WHERE pr.payment_detail_id = pd.id) as 回款日期,
                         pd.collection_status as 回款状态,
-                        
+
                         -- ========== 第六行：打款状态 ==========
                         b.payout_date as 打款日期,
                         {is_paid_out_select} as 打款状态,
@@ -1348,13 +1357,13 @@ class PaymentService:
                             WHEN {is_paid_out_select} = 1 THEN '已打款'
                             ELSE '待打款'
                         END as 打款状态显示,
-                        
+
                         -- ========== 排期状态 ==========
                         CASE 
                             WHEN wb.payment_schedule_date IS NOT NULL THEN '已排期'
                             ELSE '待排期'
                         END as 排期状态,
-                        
+
                         -- ========== 其他必要字段 ==========
                         pd.id as payment_detail_id,
                         b.id as balance_id,
@@ -1390,7 +1399,9 @@ class PaymentService:
                         wb.ocr_status,
                         wb.is_manual_corrected,
                         wb.uploader_id as weighbill_uploader_id,
-                        wb.uploader_name as weighbill_uploader_name
+                        wb.uploader_name as weighbill_uploader_name,
+                        -- ========== 保留原始合同单价用于参考 ==========
+                        wb.unit_price as 合同单价
 
                     FROM {PaymentService.TABLE_NAME} pd
                     LEFT JOIN pd_deliveries d ON d.id = pd.delivery_id
@@ -1411,7 +1422,8 @@ class PaymentService:
 
                     receipt_ids_raw = item.get('payment_receipt_ids')
                     if receipt_ids_raw:
-                        item['payment_receipt_ids'] = [int(receipt_id) for receipt_id in str(receipt_ids_raw).split(',') if receipt_id]
+                        item['payment_receipt_ids'] = [int(receipt_id) for receipt_id in str(receipt_ids_raw).split(',')
+                                                       if receipt_id]
                     else:
                         item['payment_receipt_ids'] = []
 
@@ -1420,20 +1432,21 @@ class PaymentService:
 
                     if item.get('payment_receipt_count') is not None:
                         item['payment_receipt_count'] = int(item['payment_receipt_count'])
-                    
+
                     # 转换时间字段为字符串
-                    time_fields = ['排款日期', '打款日期', '报单日期', '磅单日期', '回款日期', 'created_at', 'updated_at']
+                    time_fields = ['排款日期', '打款日期', '报单日期', '磅单日期', '回款日期', 'created_at',
+                                   'updated_at']
                     for field in time_fields:
                         if item.get(field):
                             item[field] = str(item[field])
-                    
+
                     # 格式化金额（保留2位小数）
-                    amount_fields = ['净重', '采购单价', '应打款金额', '已打款金额', '未打款金额', '联单费',
-                                   '应回款首笔金额', '应回款尾款金额', '已回款首笔金额', '已回款尾款金额']
+                    amount_fields = ['净重', '应付单价', '应付金额', '已打款金额', '未打款金额', '联单费',
+                                     '应回款首笔金额', '应回款尾款金额', '已回款首笔金额', '已回款尾款金额', '合同单价']
                     for field in amount_fields:
                         if item.get(field) is not None:
                             item[field] = round(float(item[field]), 2)
-                    
+
                     items.append(item)
 
                 return {
