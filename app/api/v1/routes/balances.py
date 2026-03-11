@@ -13,10 +13,39 @@ from fastapi.responses import FileResponse
 from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, Query, Body, Form
 from pydantic import BaseModel, Field, ValidationError
 
+from app.core.paths import UPLOADS_DIR
 from app.services.balance_service import BalanceService, get_balance_service, UPLOAD_DIR
 from app.services.contract_service import get_conn
 
 router = APIRouter(prefix="/balances", tags=["磅单结余管理"])
+
+
+def _resolve_payment_receipt_image_path(image_path: str) -> Optional[Path]:
+    raw_path = Path(str(image_path))
+    candidates: List[Path] = []
+
+    if raw_path.is_absolute():
+        candidates.append(raw_path)
+    else:
+        candidates.extend([
+            raw_path,
+            UPLOAD_DIR / raw_path,
+            UPLOADS_DIR / raw_path,
+            UPLOAD_DIR / raw_path.name,
+        ])
+        if raw_path.parts and raw_path.parts[0] == "uploads":
+            candidates.append(UPLOADS_DIR.parent / raw_path)
+
+    seen = set()
+    for candidate in candidates:
+        candidate_key = str(candidate)
+        if candidate_key in seen:
+            continue
+        seen.add(candidate_key)
+        if candidate.exists() and candidate.is_file():
+            return candidate
+
+    return None
 
 
 # ========== 请求/响应模型 ==========
@@ -556,7 +585,20 @@ async def verify_payment(
         raise HTTPException(status_code=400, detail=result.get("error"))
 
 
-@router.get("/payment-receipts/{receipt_id}/image")
+@router.get(
+    "/payment-receipts/{receipt_id}/image",
+    responses={
+        200: {
+            "content": {
+                "image/jpeg": {},
+                "image/png": {},
+                "image/bmp": {},
+                "image/webp": {},
+            },
+            "description": "支付回单图片",
+        }
+    },
+)
 async def get_payment_receipt_image(
         receipt_id: int,
         service: BalanceService = Depends(get_balance_service)
@@ -572,13 +614,8 @@ async def get_payment_receipt_image(
     if not image_path:
         raise HTTPException(status_code=404, detail="该回单没有图片")
 
-    # 构建完整路径
-    full_path = Path(image_path)
-    if not full_path.is_absolute():
-        # 如果是相对路径，拼接上传目录
-        full_path = UPLOAD_DIR / image_path
-
-    if not full_path.exists():
+    full_path = _resolve_payment_receipt_image_path(image_path)
+    if not full_path or not full_path.exists():
         raise HTTPException(status_code=404, detail="图片文件不存在")
 
     # 自动识别 MIME 类型
@@ -589,7 +626,7 @@ async def get_payment_receipt_image(
     return FileResponse(
         path=str(full_path),
         media_type=mime_type,
-        filename=full_path.name
+        headers={"Content-Disposition": f'inline; filename="{full_path.name}"'}
     )
 
 @router.get("/payment-receipts/{receipt_id}")
