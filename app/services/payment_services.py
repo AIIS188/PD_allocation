@@ -994,6 +994,14 @@ class PaymentService:
                 has_payee = "payee" in columns
                 has_payee_account = "payee_account" in columns
 
+                cur.execute("SHOW COLUMNS FROM pd_weighbills")
+                weighbill_columns = [r["Field"] for r in cur.fetchall()]
+                has_weighbill_warehouse_name = "warehouse_name" in weighbill_columns
+
+                cur.execute("SHOW COLUMNS FROM pd_balance_details")
+                balance_columns = [r["Field"] for r in cur.fetchall()]
+                has_balance_payee_bank_name = "payee_bank_name" in balance_columns
+
                 # 构建WHERE条件 - 必须已排期
                 where_clauses = ["wb.payment_schedule_date IS NOT NULL"]  # 必须已排期
                 params = []
@@ -1059,7 +1067,17 @@ class PaymentService:
                 # 分页查询 - 打款信息列表字段
                 offset = (page - 1) * size
                 payee_select = "COALESCE(b.payee_name, pd.payee, d.payee)" if has_payee else "COALESCE(b.payee_name, d.payee)"
-                payee_account_select = "COALESCE(b.payee_account, pd.payee_account)" if has_payee_account else "b.payee_account"
+                warehouse_select = "COALESCE(wb.warehouse_name, d.warehouse)" if has_weighbill_warehouse_name else "d.warehouse"
+                warehouse_payee_account_select = f"(SELECT wp.payee_account FROM pd_warehouse_payees wp WHERE wp.warehouse_name = {warehouse_select} AND wp.payee_name = {payee_select} AND wp.is_active = 1 ORDER BY wp.id ASC LIMIT 1)"
+                warehouse_payee_bank_select = f"(SELECT wp.payee_bank_name FROM pd_warehouse_payees wp WHERE wp.warehouse_name = {warehouse_select} AND wp.payee_name = {payee_select} AND wp.is_active = 1 ORDER BY wp.id ASC LIMIT 1)"
+                if has_payee_account:
+                    payee_account_select = f"COALESCE(b.payee_account, pd.payee_account, {warehouse_payee_account_select})"
+                else:
+                    payee_account_select = f"COALESCE(b.payee_account, {warehouse_payee_account_select})"
+                if has_balance_payee_bank_name:
+                    payee_bank_select = f"COALESCE(b.payee_bank_name, {warehouse_payee_bank_select})"
+                else:
+                    payee_bank_select = warehouse_payee_bank_select
                 is_paid_out_select = "COALESCE(b.payout_status, 0)"
                 query_sql = f"""
                     SELECT 
@@ -1077,6 +1095,7 @@ class PaymentService:
                         d.has_delivery_order as 是否自带联单,
                         d.upload_status as 是否上传联单,
                         d.shipper as 报单人发货人,
+                        {warehouse_select} as 仓库,
                         
                         -- ========== 第三行：磅单信息 ==========
                         wb.weigh_date as 磅单日期,
@@ -1096,6 +1115,7 @@ class PaymentService:
                         COALESCE(b.paid_amount, 0) as 已打款金额,
                         {payee_select} as 收款人,
                         {payee_account_select} as 收款人账号,
+                        {payee_bank_select} as 收款银行,
                         CASE
                             WHEN d.has_delivery_order = '无' THEN COALESCE(d.service_fee, 150)
                             ELSE COALESCE(d.service_fee, 0)
