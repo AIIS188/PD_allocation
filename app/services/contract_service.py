@@ -222,6 +222,7 @@ class ContractService:
                 main_price = p["unit_price"]
                 break
 
+        logger.info(f"[truck_count] 传入 total_quantity: {total_quantity}")
         truck_count = self._calculate_truck_count(total_quantity)
 
         return {
@@ -243,11 +244,16 @@ class ContractService:
         }
 
     def _calculate_truck_count(self, total_quantity: Optional[Decimal]) -> Optional[Decimal]:
+        logger.info(f"[truck_count] total_quantity 输入值: {total_quantity!r}")
         if total_quantity is None:
+            logger.warning("[truck_count] total_quantity is None，返回 None")
             return None
         try:
-            return (Decimal(str(total_quantity)) / Decimal("35")).to_integral_value(rounding=ROUND_FLOOR)
-        except Exception:
+            result = (Decimal(str(total_quantity)) / Decimal("35")).to_integral_value(rounding=ROUND_FLOOR)
+            logger.info(f"[truck_count] 计算结果: {result}")
+            return result
+        except Exception as e:
+            logger.error(f"[truck_count] 计算异常: {e}")
             return None
 
     def _generate_ocr_message(self, contract_no, products) -> str:
