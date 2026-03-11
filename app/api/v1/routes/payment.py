@@ -1,10 +1,22 @@
-from fastapi import HTTPException, APIRouter, Depends, Query
+import pandas as pd
+import io
+import re
+import os
+import shutil
+import uuid
+import json
+from datetime import datetime
+from pathlib import Path
+from fastapi import HTTPException, APIRouter, Depends, Query, UploadFile, File, Form
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field, ConfigDict
 from typing import Optional, List
 from datetime import date, datetime
 from decimal import Decimal
 from enum import IntEnum
 
+from app.core.paths import UPLOADS_DIR
+from app.services.payment_services import PaymentExcelProcessor
 from core.database import get_conn
 from core.logging import get_logger
 from core.auth import get_current_user
@@ -16,6 +28,23 @@ from app.services.payment_services import (
 
 logger = get_logger(__name__)
 
+# 上传目录配置
+PAYMENT_UPLOAD_DIR = UPLOADS_DIR / "payments"
+PAYMENT_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
+# 允许的文件扩展名
+ALLOWED_EXTENSIONS = {'.xlsx', '.xls'}
+MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
+
+WEIGHBILL_NO_PATTERNS = [
+    '过磅单号', '磅单号', 'weigh_ticket_no', '磅单编号', 
+    '过磅编号', 'weighbill_no', '磅单'
+]
+
+AMOUNT_PATTERNS = {
+    'yuguang': ['含税金额', '金额', '总价', 'total_amount', '含税总价'],
+    'jinli': ['结算金额', '金额', '总价', 'total_amount', '结算总价']
+}
 
 # ========== Pydantic 模型定义 ==========
 
@@ -314,6 +343,27 @@ class UpdateCollectionReq(BaseModel):
     final_payment_date: Optional[str] = Field(None, description="尾款回款日期，格式：YYYY-MM-DD（仅金利使用）")
     payment_date: Optional[str] = Field(None, description="回款日期，格式：YYYY-MM-DD（兼容旧接口，豫光可用）")
     remark: Optional[str] = Field(None, description="备注")
+
+class UploadResponse(BaseModel):
+    """上传响应模型"""
+    success: bool
+    message: str
+    data: Optional[dict] = None
+
+class PaymentExcelImportReq(BaseModel):
+    """Excel导入请求"""
+    file_id: str = Field(..., description="上传文件ID（通过/upload-excel接口获取）")
+    company_type: Optional[str] = Field(None, description="公司类型：yuguang-豫光, jinli-金利，不传则自动检测")
+
+
+class PaymentExcelImportResp(BaseModel):
+    """Excel导入响应"""
+    success: bool
+    message: str
+    total_rows: int
+    success_count: int
+    fail_count: int
+    details: List[dict]
 # ========== 路由定义 ==========
 
 router = APIRouter(tags=["PD收款明细管理"])
@@ -932,3 +982,647 @@ def create_payment_by_weighbill(
     except Exception as e:
         logger.exception("手动创建回款信息异常")
         raise HTTPException(status_code=500, detail=f"创建失败: {str(e)}")
+    
+@router.post("/upload-excel", response_model=UploadResponse)
+async def upload_payment_excel(
+    file: UploadFile = File(..., description="回款明细Excel文件"),
+    remark: Optional[str] = Form(None, description="备注说明"),
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    上传回款明细Excel文件
+    
+    功能：
+    1. 接收Excel文件（.xlsx/.xls）
+    2. 保存到 uploads/payments/ 目录
+    3. 生成唯一文件名避免覆盖
+    4. 可选：记录上传日志
+    
+    **请求示例：**
+    ```bash
+    curl -X POST "http://api/payments/upload-excel" \\
+      -H "Authorization: Bearer {token}" \\
+      -F "file=@金利首付款明细.xlsx" \\
+      -F "remark=3月份回款数据"
+    ```
+    """
+    
+    # ========== 1. 验证文件类型 ==========
+    file_ext = Path(file.filename).suffix.lower()
+    if file_ext not in ALLOWED_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"不支持的文件格式: {file_ext}，请上传Excel文件(.xlsx/.xls)"
+        )
+    
+    # ========== 2. 读取并验证文件大小 ==========
+    contents = await file.read()
+    file_size = len(contents)
+    
+    if file_size > MAX_FILE_SIZE:
+        raise HTTPException(
+            status_code=400,
+            detail=f"文件大小不能超过10MB，当前: {file_size / 1024 / 1024:.2f}MB"
+        )
+    
+    if file_size == 0:
+        raise HTTPException(status_code=400, detail="文件不能为空")
+    
+    # ========== 3. 生成唯一文件名 ==========
+    # 格式: 原文件名(清理)_时间戳_随机4位.xlsx
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    random_suffix = uuid.uuid4().hex[:4]
+    
+    # 清理原文件名（移除非法字符）
+    safe_name = "".join(c for c in file.filename if c.isalnum() or c in (' ', '-', '_', '.')).rstrip()
+    safe_name = Path(safe_name).stem  # 去掉扩展名
+    
+    saved_filename = f"{safe_name}_{timestamp}_{random_suffix}{file_ext}"
+    file_path = PAYMENT_UPLOAD_DIR / saved_filename
+    
+    # ========== 4. 保存文件 ==========
+    try:
+        with open(file_path, "wb") as f:
+            f.write(contents)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"文件保存失败: {str(e)}")
+    
+    # ========== 5. 记录上传日志（可选）==========
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                # 检查是否存在上传记录表
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS pd_payment_upload_logs (
+                        id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                        original_filename VARCHAR(255) NOT NULL COMMENT '原始文件名',
+                        saved_filename VARCHAR(255) NOT NULL COMMENT '保存文件名',
+                        file_path VARCHAR(500) NOT NULL COMMENT '文件路径',
+                        file_size BIGINT COMMENT '文件大小(字节)',
+                        remark VARCHAR(500) COMMENT '备注',
+                        uploaded_by BIGINT COMMENT '上传人ID',
+                        uploaded_by_name VARCHAR(64) COMMENT '上传人姓名',
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        INDEX idx_created_at (created_at)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='回款文件上传日志';
+                """)
+                
+                # 插入上传记录
+                cur.execute("""
+                    INSERT INTO pd_payment_upload_logs 
+                    (original_filename, saved_filename, file_path, file_size, 
+                     remark, uploaded_by, uploaded_by_name)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                """, (
+                    file.filename,
+                    saved_filename,
+                    str(file_path),
+                    file_size,
+                    remark,
+                    current_user.get("id"),
+                    current_user.get("name") or current_user.get("account")
+                ))
+                conn.commit()
+    except Exception as e:
+        # 记录日志失败不影响主流程
+        print(f"记录上传日志失败: {e}")
+    
+    # ========== 6. 构造返回数据 ==========
+    # 构建访问URL（假设有静态文件服务）
+    file_url = f"/uploads/payments/{saved_filename}"
+    
+    return UploadResponse(
+        success=True,
+        message="文件上传成功",
+        data={
+            "original_filename": file.filename,
+            "saved_filename": saved_filename,
+            "file_path": str(file_path),
+            "file_url": file_url,
+            "file_size": file_size,
+            "file_size_human": f"{file_size / 1024:.2f} KB",
+            "upload_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "remark": remark,
+            "uploader": current_user.get("name") or current_user.get("account")
+        }
+    )
+
+
+@router.get("/uploads", response_model=dict)
+async def list_uploaded_files(
+    page: int = 1,
+    page_size: int = 20,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    查询已上传的回款文件列表
+    """
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                # 查询总数
+                cur.execute("SELECT COUNT(*) FROM pd_payment_upload_logs")
+                total = cur.fetchone()[0]
+                
+                # 分页查询
+                offset = (page - 1) * page_size
+                cur.execute("""
+                    SELECT * FROM pd_payment_upload_logs
+                    ORDER BY created_at DESC
+                    LIMIT %s OFFSET %s
+                """, (page_size, offset))
+                
+                columns = [desc[0] for desc in cur.description]
+                rows = cur.fetchall()
+                
+                data = []
+                for row in rows:
+                    item = dict(zip(columns, row))
+                    if item.get('created_at'):
+                        item['created_at'] = str(item['created_at'])
+                    data.append(item)
+                
+                return {
+                    "success": True,
+                    "data": data,
+                    "total": total,
+                    "page": page,
+                    "page_size": page_size
+                }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"查询失败: {str(e)}")
+
+
+@router.get("/uploads/{filename}")
+async def download_uploaded_file(
+    filename: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    下载已上传的回款文件
+    """
+    file_path = PAYMENT_UPLOAD_DIR / filename
+    
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="文件不存在")
+    
+    return FileResponse(
+        path=str(file_path),
+        filename=filename,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+
+
+@router.delete("/uploads/{filename}")
+async def delete_uploaded_file(
+    filename: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    删除已上传的回款文件
+    """
+    file_path = PAYMENT_UPLOAD_DIR / filename
+    
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="文件不存在")
+    
+    try:
+        # 删除物理文件
+        os.remove(file_path)
+        
+        # 删除数据库记录
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "DELETE FROM pd_payment_upload_logs WHERE saved_filename = %s",
+                    (filename,)
+                )
+                conn.commit()
+        
+        return {
+            "success": True,
+            "message": "文件删除成功"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"删除失败: {str(e)}")
+
+@router.post("/import-excel", summary="Excel批量导入回款数据", response_model=dict)
+async def import_payment_excel(
+    body: PaymentExcelImportReq,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    批量导入回款明细Excel文件
+    
+    核心逻辑：
+    1. 读取已上传的Excel文件
+    2. 自动检测表头，识别磅单编号列和金额列
+    3. 区分豫光和金利公司：
+       - 豫光：含税金额 × 90% → arrival_paid_amount
+       - 金利：结算金额 × 100% → arrival_paid_amount
+    4. 根据磅单号匹配磅单/报单，获取合同信息
+    5. 更新 pd_payment_details.arrival_paid_amount
+    6. 保存原始数据到 pd_payment_excel_imports 表
+    
+    请求示例：
+    {
+        "file_id": "金利回款明细_20250311_143022_a7f3.xlsx",
+        "company_type": "jinli"  // 可选，不传则自动检测
+    }
+    """
+    check_finance_permission(current_user)
+    
+    try:
+        # ========== 1. 查找并读取Excel文件 ==========
+        file_path = PAYMENT_UPLOAD_DIR / body.file_id
+        if not file_path.exists():
+            # 从数据库查找文件路径
+            with get_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        SELECT file_path FROM pd_payment_upload_logs 
+                        WHERE saved_filename = %s OR original_filename = %s
+                        ORDER BY created_at DESC LIMIT 1
+                    """, (body.file_id, body.file_id))
+                    row = cur.fetchone()
+                    if row:
+                        file_path = Path(row['file_path'])
+                    else:
+                        raise HTTPException(status_code=404, detail="文件不存在，请先调用 /upload-excel 上传")
+        
+        # ========== 2. 解析Excel，检测表头 ==========
+        try:
+            # 先读取原始数据检测表头行
+            df_raw = pd.read_excel(file_path, header=None)
+            processor = PaymentExcelProcessor()
+            header_info = processor.detect_headers(df_raw)
+            
+            # 使用检测到的表头行重新读取
+            df = pd.read_excel(file_path, header=header_info['header_row'])
+            # 清理列名
+            df.columns = [str(col).strip() if pd.notna(col) else f"Col_{i}" 
+                         for i, col in enumerate(df.columns)]
+            
+            logger.info(f"检测到表头行: {header_info['header_row']}, "
+                       f"磅单列: {header_info['weighbill_col']}, "
+                       f"金额列: {header_info['amount_col']}, "
+                       f"公司类型: {header_info['company_type']}")
+            
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Excel解析失败: {str(e)}")
+        
+        # ========== 3. 确定公司类型 ==========
+        company_type = body.company_type or header_info.get('company_type', 'yuguang')
+        
+        # 文件名辅助判断
+        filename_lower = str(file_path.name).lower()
+        if not body.company_type:
+            if '金利' in filename_lower or 'jinli' in filename_lower:
+                company_type = 'jinli'
+            elif '豫光' in filename_lower or 'yuguang' in filename_lower:
+                company_type = 'yuguang'
+        
+        # ========== 4. 解析数据行 ==========
+        try:
+            records = processor.parse_data(df)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        
+        if not records:
+            raise HTTPException(status_code=400, detail="未从Excel中解析到有效数据（磅单号+金额）")
+        
+        # ========== 5. 逐行处理并入库 ==========
+        results = []
+        success_count = 0
+        fail_count = 0
+        
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                for record in records:
+                    result_item = {
+                        'row_index': record['row_index'],
+                        'weighbill_no': record['weighbill_no'],
+                        'original_amount': record['amount'],
+                        'status': 'pending'
+                    }
+                    
+                    try:
+                        # 5.1 查找磅单和合同信息
+                        match_info = PaymentService.find_weighbill_and_contract(
+                            record['weighbill_no']
+                        )
+                        
+                        if not match_info.get('found'):
+                            result_item.update({
+                                'status': 'failed',
+                                'reason': '未找到匹配的磅单或报单'
+                            })
+                            fail_count += 1
+                            results.append(result_item)
+                            continue
+                        
+                        # 5.2 根据公司类型计算金额
+                        original_amount = Decimal(str(record['amount']))
+                        
+                        if company_type == 'jinli':
+                            # 金利：结算金额直接作为已回款首笔金额
+                            processed_amount = original_amount
+                        else:
+                            # 豫光：含税金额的90%作为已回款首笔金额
+                            processed_amount = (original_amount * Decimal('0.9')).quantize(Decimal('0.01'))
+                        
+                        # 5.3 更新或创建回款记录
+                        update_result = PaymentService.update_arrival_paid_amount(
+                            weighbill_no=record['weighbill_no'],
+                            amount=float(processed_amount),
+                            match_info=match_info,
+                            company_type=company_type  # 传递公司类型
+                        )
+                        
+                        # 5.4 保存原始导入数据到 pd_payment_excel_imports
+                        # 确保表存在
+                        cur.execute("""
+                            CREATE TABLE IF NOT EXISTS pd_payment_excel_imports (
+                                id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                                payment_detail_id BIGINT COMMENT '关联的收款明细ID',
+                                weighbill_no VARCHAR(64) COMMENT '磅单号',
+                                original_amount DECIMAL(15, 2) COMMENT 'Excel中的原始金额',
+                                processed_amount DECIMAL(15, 2) COMMENT '处理后金额',
+                                company_type VARCHAR(20) COMMENT '公司类型：yuguang/jinli',
+                                raw_data JSON COMMENT '原始行数据',
+                                imported_by BIGINT COMMENT '导入人ID',
+                                imported_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                                status VARCHAR(20) DEFAULT 'success' COMMENT '处理状态',
+                                fail_reason VARCHAR(500) COMMENT '失败原因',
+                                INDEX idx_weighbill_no (weighbill_no),
+                                INDEX idx_payment_detail_id (payment_detail_id),
+                                INDEX idx_imported_at (imported_at),
+                                INDEX idx_company_type (company_type)
+                            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='回款Excel导入明细记录';
+                        """)
+                        
+                        # 插入导入记录
+                        cur.execute("""
+                            INSERT INTO pd_payment_excel_imports 
+                            (payment_detail_id, weighbill_no, original_amount, 
+                             processed_amount, company_type, raw_data, 
+                             imported_by, status, fail_reason)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        """, (
+                            update_result.get('payment_id'),
+                            record['weighbill_no'],
+                            float(original_amount),
+                            float(processed_amount),
+                            company_type,
+                            json.dumps(record['raw_data'], ensure_ascii=False, default=str),
+                            current_user.get('id'),
+                            'success',
+                            None
+                        ))
+                        
+                        result_item.update({
+                            'status': 'success',
+                            'payment_id': update_result.get('payment_id'),
+                            'action': update_result.get('action'),
+                            'processed_amount': float(processed_amount),
+                            'contract_no': match_info.get('contract_no'),
+                            'smelter_name': match_info.get('smelter_name')
+                        })
+                        success_count += 1
+                        
+                    except Exception as e:
+                        logger.exception(f"处理行 {record['row_index']} 失败")
+                        result_item.update({
+                            'status': 'failed',
+                            'reason': str(e)
+                        })
+                        fail_count += 1
+                        
+                        # 记录失败数据
+                        try:
+                            cur.execute("""
+                                INSERT INTO pd_payment_excel_imports 
+                                (weighbill_no, original_amount, company_type, 
+                                 raw_data, imported_by, status, fail_reason)
+                                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                            """, (
+                                record['weighbill_no'],
+                                float(record['amount']),
+                                company_type,
+                                json.dumps(record['raw_data'], ensure_ascii=False, default=str),
+                                current_user.get('id'),
+                                'failed',
+                                str(e)[:500]
+                            ))
+                        except Exception as log_err:
+                            logger.error(f"记录失败数据时出错: {log_err}")
+                
+                conn.commit()
+        
+        # ========== 6. 更新上传日志的处理状态 ==========
+        try:
+            with get_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        UPDATE pd_payment_upload_logs 
+                        SET processed = 1, processed_at = NOW(),
+                            success_count = %s, fail_count = %s,
+                            company_type = %s
+                        WHERE saved_filename = %s
+                    """, (success_count, fail_count, company_type, body.file_id))
+                    conn.commit()
+        except Exception as e:
+            logger.warning(f"更新上传日志状态失败: {e}")
+        
+        # ========== 7. 返回结果 ==========
+        return {
+            "success": True,
+            "message": f"导入完成：成功 {success_count} 条，失败 {fail_count} 条",
+            "company_type": company_type,
+            "total_rows": len(records),
+            "success_count": success_count,
+            "fail_count": fail_count,
+            "details": results
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Excel导入回款数据异常")
+        raise HTTPException(status_code=500, detail=f"导入失败: {str(e)}")
+    
+@router.get("/import-records", summary="查询Excel导入记录")
+async def list_import_records(
+    page: int = Query(1, ge=1),
+    size: int = Query(20, ge=1, le=100),
+    company_type: Optional[str] = Query(None, description="公司类型筛选：yuguang/jinli"),
+    status: Optional[str] = Query(None, description="处理状态：success/failed"),
+    start_date: Optional[date] = Query(None),
+    end_date: Optional[date] = Query(None),
+    current_user: dict = Depends(get_current_user)
+):
+    """查询Excel导入的历史记录（包含原始数据）"""
+    check_finance_permission(current_user)
+    
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                where_clauses = ["1=1"]
+                params = []
+                
+                if company_type:
+                    where_clauses.append("company_type = %s")
+                    params.append(company_type)
+                
+                if status:
+                    where_clauses.append("status = %s")
+                    params.append(status)
+                
+                if start_date:
+                    where_clauses.append("DATE(imported_at) >= %s")
+                    params.append(start_date)
+                
+                if end_date:
+                    where_clauses.append("DATE(imported_at) <= %s")
+                    params.append(end_date)
+                
+                where_sql = " AND ".join(where_clauses)
+                
+                # 查询总数
+                cur.execute(f"""
+                    SELECT COUNT(*) as total FROM pd_payment_excel_imports
+                    WHERE {where_sql}
+                """, tuple(params))
+                total = cur.fetchone()['total']
+                
+                # 分页查询
+                offset = (page - 1) * size
+                cur.execute(f"""
+                    SELECT 
+                        id,
+                        payment_detail_id,
+                        weighbill_no,
+                        original_amount,
+                        processed_amount,
+                        company_type,
+                        raw_data,
+                        imported_by,
+                        imported_at,
+                        status,
+                        fail_reason
+                    FROM pd_payment_excel_imports
+                    WHERE {where_sql}
+                    ORDER BY imported_at DESC
+                    LIMIT %s OFFSET %s
+                """, tuple(params + [size, offset]))
+                
+                columns = [desc[0] for desc in cur.description]
+                rows = cur.fetchall()
+                
+                items = []
+                for row in rows:
+                    item = dict(zip(columns, row))
+                    # 解析JSON
+                    if item.get('raw_data') and isinstance(item['raw_data'], str):
+                        try:
+                            item['raw_data'] = json.loads(item['raw_data'])
+                        except:
+                            pass
+                    # 时间格式化
+                    if item.get('imported_at'):
+                        item['imported_at'] = str(item['imported_at'])
+                    items.append(item)
+                
+                return {
+                    "success": True,
+                    "total": total,
+                    "page": page,
+                    "size": size,
+                    "items": items
+                }
+                
+    except Exception as e:
+        logger.exception("查询导入记录异常")
+        raise HTTPException(status_code=500, detail=f"查询失败: {str(e)}")
+
+
+@router.get("/import-records/export", summary="导出Excel导入记录")
+async def export_import_records(
+    company_type: Optional[str] = Query(None),
+    status: Optional[str] = Query(None),
+    start_date: Optional[date] = Query(None),
+    end_date: Optional[date] = Query(None),
+    current_user: dict = Depends(get_current_user)
+):
+    """导出Excel导入记录为Excel文件"""
+    check_finance_permission(current_user)
+    
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                where_clauses = ["1=1"]
+                params = []
+                
+                if company_type:
+                    where_clauses.append("company_type = %s")
+                    params.append(company_type)
+                
+                if status:
+                    where_clauses.append("status = %s")
+                    params.append(status)
+                
+                if start_date:
+                    where_clauses.append("DATE(imported_at) >= %s")
+                    params.append(start_date)
+                
+                if end_date:
+                    where_clauses.append("DATE(imported_at) <= %s")
+                    params.append(end_date)
+                
+                where_sql = " AND ".join(where_clauses)
+                
+                cur.execute(f"""
+                    SELECT 
+                        weighbill_no as '磅单号',
+                        original_amount as '原始金额',
+                        processed_amount as '处理后金额',
+                        company_type as '公司类型',
+                        status as '处理状态',
+                        fail_reason as '失败原因',
+                        imported_at as '导入时间'
+                    FROM pd_payment_excel_imports
+                    WHERE {where_sql}
+                    ORDER BY imported_at DESC
+                """, tuple(params))
+                
+                rows = cur.fetchall()
+                
+                if not rows:
+                    raise HTTPException(status_code=404, detail="无数据可导出")
+                
+                # 创建DataFrame并导出
+                df = pd.DataFrame(rows)
+                
+                # 转换时间格式
+                if '导入时间' in df.columns:
+                    df['导入时间'] = pd.to_datetime(df['导入时间']).dt.strftime('%Y-%m-%d %H:%M:%S')
+                
+                # 生成导出文件
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                export_filename = f"导入记录导出_{timestamp}.xlsx"
+                export_path = PAYMENT_UPLOAD_DIR / export_filename
+                
+                df.to_excel(export_path, index=False, engine='openpyxl')
+                
+                return FileResponse(
+                    path=str(export_path),
+                    filename=export_filename,
+                    media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+                
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("导出导入记录异常")
+        raise HTTPException(status_code=500, detail=f"导出失败: {str(e)}")
+    

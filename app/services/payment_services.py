@@ -28,7 +28,200 @@ class PaymentStage(IntEnum):
     DELIVERY = 1     # 到货款（90%）
     FINAL = 2        # 尾款（10%）
 
+class PaymentExcelProcessor:
+    """回款Excel处理器"""
+    
+    def __init__(self):
+        self.weighbill_col = None
+        self.amount_col = None
+        self.company_type = None
+    
+    def detect_headers(self, df: pd.DataFrame) -> dict:
+        """
+        检测表头，识别磅单编号列和金额列
+        """
+        # 获取实际表头（前10行内查找）
+        header_row = 0
+        for idx in range(min(10, len(df))):
+            row_values = [str(v) for v in df.iloc[idx].values if pd.notna(v)]
+            row_text = ' '.join(row_values)
+            
+            # 检查是否包含关键表头字段
+            if any(kw in row_text for kw in WEIGHBILL_NO_PATTERNS):
+                header_row = idx
+                df.columns = df.iloc[idx]
+                df = df.iloc[idx + 1:].reset_index(drop=True)
+                break
+        
+        columns = [str(col).strip() for col in df.columns if pd.notna(col)]
+        
+        # 检测磅单编号列
+        for col in columns:
+            col_lower = col.lower()
+            for pattern in WEIGHBILL_NO_PATTERNS:
+                if pattern.lower() in col_lower:
+                    self.weighbill_col = col
+                    break
+            if self.weighbill_col:
+                break
+        
+        # 检测公司类型和金额列
+        all_text = ' '.join(columns).lower()
+        if '结算金额' in all_text or '采购合同' in all_text:
+            self.company_type = 'jinli'
+            amount_patterns = AMOUNT_PATTERNS['jinli']
+        else:
+            self.company_type = 'yuguang'
+            amount_patterns = AMOUNT_PATTERNS['yuguang']
+        
+        # 检测金额列
+        for col in columns:
+            col_lower = col.lower().replace(' ', '')
+            for pattern in amount_patterns:
+                if pattern.lower() in col_lower:
+                    self.amount_col = col
+                    break
+            if self.amount_col:
+                break
+        
+        return {
+            'weighbill_col': self.weighbill_col,
+            'amount_col': self.amount_col,
+            'company_type': self.company_type,
+            'header_row': header_row,
+            'columns': columns
+        }
+    
+    def parse_data(self, df: pd.DataFrame) -> list:
+        """
+        解析数据，返回磅单编号和金额列表
+        """
+        if not self.weighbill_col or not self.amount_col:
+            raise ValueError(f"未能识别必要的列，磅单列: {self.weighbill_col}, 金额列: {self.amount_col}")
+        
+        records = []
+        
+        for idx, row in df.iterrows():
+            try:
+                # 获取磅单号
+                weighbill_no = str(row.get(self.weighbill_col, '')).strip()
+                if not weighbill_no or weighbill_no in ['nan', 'None', '']:
+                    continue
+                
+                # 获取金额
+                amount_val = row.get(self.amount_col)
+                if pd.isna(amount_val):
+                    continue
+                
+                # 清理金额（移除逗号、空格等）
+                if isinstance(amount_val, str):
+                    amount_str = amount_val.replace(',', '').replace(' ', '').replace('¥', '').replace('￥', '')
+                    try:
+                        amount = float(amount_str)
+                    except ValueError:
+                        continue
+                else:
+                    amount = float(amount_val)
+                
+                if amount <= 0:
+                    continue
+                
+                records.append({
+                    'row_index': idx,
+                    'weighbill_no': weighbill_no,
+                    'amount': amount,
+                    'raw_data': row.to_dict()
+                })
+                
+            except Exception as e:
+                print(f"解析第{idx}行失败: {e}")
+                continue
+        
+        return records
 
+
+class PaymentImportService:
+    """回款导入服务"""
+    
+    @staticmethod
+    def find_weighbill_and_contract(weighbill_no: str) -> dict:
+        """
+        根据磅单号查找磅单信息和合同
+        """
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                # 1. 先查磅单表
+                cur.execute("""
+                    SELECT 
+                        w.id as weighbill_id,
+                        w.delivery_id,
+                        w.contract_no as weighbill_contract_no,
+                        w.vehicle_no,
+                        w.product_name,
+                        w.net_weight,
+                        w.unit_price,
+                        d.contract_no as delivery_contract_no,
+                        d.target_factory_name,
+                        d.driver_name,
+                        d.driver_phone
+                    FROM pd_weighbills w
+                    LEFT JOIN pd_deliveries d ON w.delivery_id = d.id
+                    WHERE w.weigh_ticket_no = %s
+                    LIMIT 1
+                """, (weighbill_no,))
+                
+                row = cur.fetchone()
+                if row:
+                    return {
+                        'found': True,
+                        'source': 'weighbill',
+                        'weighbill_id': row[0],
+                        'delivery_id': row[1],
+                        'contract_no': row[2] or row[6],  # 优先磅单合同号
+                        'vehicle_no': row[3],
+                        'product_name': row[4],
+                        'net_weight': row[5],
+                        'unit_price': row[6],
+                        'smelter_name': row[7],
+                        'driver_name': row[8],
+                        'driver_phone': row[9]
+                    }
+                
+                # 2. 再查报单表（通过车牌号匹配）
+                cur.execute("""
+                    SELECT 
+                        d.id as delivery_id,
+                        d.contract_no,
+                        d.vehicle_no,
+                        d.product_name,
+                        d.target_factory_name,
+                        d.driver_name,
+                        d.driver_phone,
+                        d.quantity as net_weight,
+                        d.contract_unit_price as unit_price
+                    FROM pd_deliveries d
+                    WHERE d.vehicle_no = %s
+                    ORDER BY d.created_at DESC
+                    LIMIT 1
+                """, (weighbill_no,))
+                
+                row = cur.fetchone()
+                if row:
+                    return {
+                        'found': True,
+                        'source': 'delivery',
+                        'delivery_id': row[0],
+                        'contract_no': row[1],
+                        'vehicle_no': row[2],
+                        'product_name': row[3],
+                        'smelter_name': row[4],
+                        'driver_name': row[5],
+                        'driver_phone': row[6],
+                        'net_weight': row[7],
+                        'unit_price': row[8]
+                    }
+                
+                return {'found': False}
 # ========== 工具函数 ==========
 
 def validate_amount(amount: float) -> bool:
@@ -2192,3 +2385,240 @@ class PaymentService:
                 "payment_records": payment_records,
                 "payment_record_count": len(payment_records)
             }
+    @staticmethod
+    def find_weighbill_and_contract(weighbill_no: str) -> dict:
+        """
+        根据磅单号查找磅单信息和合同
+        """
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                # 1. 先查磅单表
+                cur.execute("""
+                    SELECT 
+                        w.id as weighbill_id,
+                        w.delivery_id,
+                        w.contract_no as weighbill_contract_no,
+                        w.vehicle_no,
+                        w.product_name,
+                        w.net_weight,
+                        w.unit_price,
+                        d.contract_no as delivery_contract_no,
+                        d.target_factory_name,
+                        d.driver_name,
+                        d.driver_phone
+                    FROM pd_weighbills w
+                    LEFT JOIN pd_deliveries d ON w.delivery_id = d.id
+                    WHERE w.weigh_ticket_no = %s
+                    LIMIT 1
+                """, (weighbill_no,))
+                
+                row = cur.fetchone()
+                if row:
+                    return {
+                        'found': True,
+                        'source': 'weighbill',
+                        'weighbill_id': row[0],
+                        'delivery_id': row[1],
+                        'contract_no': row[2] or row[6],  # 优先磅单合同号
+                        'vehicle_no': row[3],
+                        'product_name': row[4],
+                        'net_weight': row[5],
+                        'unit_price': row[6],
+                        'smelter_name': row[7],
+                        'driver_name': row[8],
+                        'driver_phone': row[9]
+                    }
+                
+                # 2. 再查报单表（通过车牌号匹配）
+                cur.execute("""
+                    SELECT 
+                        d.id as delivery_id,
+                        d.contract_no,
+                        d.vehicle_no,
+                        d.product_name,
+                        d.target_factory_name,
+                        d.driver_name,
+                        d.driver_phone,
+                        d.quantity as net_weight,
+                        d.contract_unit_price as unit_price
+                    FROM pd_deliveries d
+                    WHERE d.vehicle_no = %s
+                    ORDER BY d.created_at DESC
+                    LIMIT 1
+                """, (weighbill_no,))
+                
+                row = cur.fetchone()
+                if row:
+                    return {
+                        'found': True,
+                        'source': 'delivery',
+                        'delivery_id': row[0],
+                        'contract_no': row[1],
+                        'vehicle_no': row[2],
+                        'product_name': row[3],
+                        'smelter_name': row[4],
+                        'driver_name': row[5],
+                        'driver_phone': row[6],
+                        'net_weight': row[7],
+                        'unit_price': row[8]
+                    }
+                
+                return {'found': False}
+            
+    @staticmethod
+    def update_arrival_paid_amount(weighbill_no: str, amount: float, match_info: dict, company_type: str = 'yuguang') -> dict:
+        """
+        更新或创建回款记录，写入arrival_paid_amount
+        
+        Args:
+            weighbill_no: 磅单号
+            amount: 金额（已根据公司类型处理后的金额）
+            match_info: 匹配到的磅单/报单信息
+            company_type: 公司类型 'yuguang' 或 'jinli'
+        """
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                # 检查是否已存在该磅单号的记录
+                cur.execute("""
+                    SELECT id, arrival_paid_amount, paid_amount, total_amount
+                    FROM pd_payment_details 
+                    WHERE weighbill_no = %s
+                    LIMIT 1
+                """, (weighbill_no,))
+                
+                existing = cur.fetchone()
+                
+                # 根据公司类型确定金额计算方式
+                if company_type == 'jinli':
+                    # 金利：结算金额直接作为已回款首笔金额（100%）
+                    arrival_amount = Decimal(str(amount))
+                else:
+                    # 豫光：含税金额的90%作为已回款首笔金额
+                    # 注意：如果传入的amount已经是含税金额，则需要乘以0.9
+                    # 如果传入的amount已经处理过，则直接使用
+                    arrival_amount = Decimal(str(amount))
+                
+                arrival_amount = arrival_amount.quantize(Decimal('0.01'))
+                
+                if existing:
+                    # 更新已有记录
+                    payment_id = existing[0]
+                    current_arrival_paid = Decimal(str(existing[1] or 0))
+                    current_paid = Decimal(str(existing[2] or 0))
+                    total_amount = Decimal(str(existing[3] or 0))
+                    
+                    # 累加模式：在原有基础上增加
+                    new_arrival_paid = current_arrival_paid + arrival_amount
+                    new_paid = current_paid + arrival_amount
+                    new_unpaid = total_amount - new_paid
+                    
+                    # 确定状态
+                    if new_paid >= total_amount:
+                        status = 2  # 已结清
+                        collection_status = 2
+                    elif new_paid > 0:
+                        status = 1  # 部分回款
+                        collection_status = 1 if company_type == 'jinli' else 2
+                    else:
+                        status = 0
+                        collection_status = 0
+                    
+                    cur.execute("""
+                        UPDATE pd_payment_details 
+                        SET arrival_paid_amount = %s,
+                            paid_amount = %s,
+                            unpaid_amount = %s,
+                            status = %s,
+                            collection_status = %s,
+                            is_paid = 1,
+                            updated_at = NOW()
+                        WHERE id = %s
+                    """, (
+                        float(new_arrival_paid),
+                        float(new_paid),
+                        float(new_unpaid),
+                        status,
+                        collection_status,
+                        payment_id
+                    ))
+                    
+                    action = 'updated'
+                else:
+                    # 创建新记录
+                    contract_no = match_info.get('contract_no', '')
+                    smelter_name = match_info.get('smelter_name', '')
+                    
+                    # 判断冶炼厂类型
+                    is_jinli = company_type == 'jinli' or '金利' in smelter_name
+                    
+                    # 计算各项金额
+                    total_amount = Decimal(str(amount))
+                    
+                    if is_jinli:
+                        # 金利：分阶段回款，首笔约90%，尾款约10%
+                        arrival_payment_amount = total_amount * Decimal('0.9')
+                        final_payment_amount = total_amount * Decimal('0.1')
+                        # 已回款首笔 = 传入的金额（结算金额）
+                        arrival_paid_amount = arrival_amount
+                        final_paid_amount = Decimal('0')
+                        paid_amount = arrival_paid_amount
+                        unpaid_amount = total_amount - paid_amount
+                        status = 1  # 部分回款
+                        collection_status = 1  # 已回首笔待回尾款
+                    else:
+                        # 豫光：一次性回款
+                        arrival_payment_amount = total_amount
+                        final_payment_amount = Decimal('0')
+                        arrival_paid_amount = arrival_amount
+                        final_paid_amount = Decimal('0')
+                        paid_amount = arrival_paid_amount
+                        unpaid_amount = total_amount - paid_amount
+                        status = 2  # 已结清（豫光一次性回款）
+                        collection_status = 2  # 已回款
+                    
+                    cur.execute("""
+                        INSERT INTO pd_payment_details 
+                        (sales_order_id, delivery_id, weighbill_no, 
+                         smelter_name, contract_no, material_name,
+                         unit_price, net_weight, total_amount,
+                         arrival_payment_amount, final_payment_amount,
+                         arrival_paid_amount, final_paid_amount,
+                         paid_amount, unpaid_amount,
+                         status, collection_status, is_paid,
+                         created_at, updated_at)
+                        VALUES 
+                        (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
+                    """, (
+                        match_info.get('delivery_id', 0),
+                        match_info.get('delivery_id', 0),
+                        weighbill_no,
+                        smelter_name,
+                        contract_no,
+                        match_info.get('product_name', ''),
+                        match_info.get('unit_price', 0),
+                        match_info.get('net_weight', 0),
+                        float(total_amount),
+                        float(arrival_payment_amount),
+                        float(final_payment_amount),
+                        float(arrival_paid_amount),
+                        float(final_paid_amount),
+                        float(paid_amount),
+                        float(unpaid_amount),
+                        status,
+                        collection_status,
+                        1,  # is_paid
+                    ))
+                    
+                    payment_id = cur.lastrowid
+                    action = 'created'
+                
+                conn.commit()
+                
+                return {
+                    'success': True,
+                    'payment_id': payment_id,
+                    'action': action,
+                    'arrival_paid_amount': float(arrival_amount),
+                    'total_amount': float(amount),
+                    'company_type': company_type
+                }
