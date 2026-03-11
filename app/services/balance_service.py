@@ -1392,6 +1392,7 @@ class BalanceService:
             payee_name: str = None,
             driver_phone: str = None,
             fuzzy_keywords: str = None,
+            payment_schedule_date: str = None,
             min_balance: float = 0.01,
             payment_status: int = None,
             page: int = 1,
@@ -1410,6 +1411,8 @@ class BalanceService:
         try:
             with get_conn() as conn:
                 with conn.cursor() as cur:
+                    schedule_date_expr = "COALESCE(b.schedule_date, w.payment_schedule_date)"
+
                     # 构建WHERE条件（在分组前过滤）
                     where_clauses = ["1=1"]
                     params = []
@@ -1423,6 +1426,10 @@ class BalanceService:
                     if driver_phone:
                         where_clauses.append("driver_phone = %s")
                         params.append(driver_phone)
+
+                    if payment_schedule_date:
+                        where_clauses.append(f"{schedule_date_expr} = %s")
+                        params.append(payment_schedule_date)
 
                     # 支付状态筛选
                     if payment_status is not None:
@@ -1456,7 +1463,8 @@ class BalanceService:
                     count_sql = f"""
                         SELECT COUNT(*) FROM (
                             SELECT driver_name, driver_phone
-                            FROM pd_balance_details
+                            FROM pd_balance_details b
+                            LEFT JOIN pd_weighbills w ON w.id = b.weighbill_id
                             WHERE {where_sql}
                             GROUP BY driver_name, driver_phone
                         ) t
@@ -1470,6 +1478,7 @@ class BalanceService:
                         SELECT 
                             driver_name as payee_name,
                             driver_phone,
+                            MAX({schedule_date_expr}) as payment_schedule_date,
                             COUNT(*) as bill_count,
                             SUM(payable_amount) as total_payable,
                             SUM(paid_amount) as total_paid,
@@ -1480,7 +1489,8 @@ class BalanceService:
                             MAX(created_at) as last_bill_date,
                             SUM(CASE WHEN payment_status = 0 THEN 1 ELSE 0 END) as pending_count,
                             SUM(CASE WHEN payment_status = 1 THEN 1 ELSE 0 END) as partial_count
-                        FROM pd_balance_details
+                        FROM pd_balance_details b
+                        LEFT JOIN pd_weighbills w ON w.id = b.weighbill_id
                         WHERE {where_sql}
                         GROUP BY driver_name, driver_phone
                         ORDER BY total_balance DESC, last_bill_date DESC
@@ -1504,7 +1514,7 @@ class BalanceService:
                         item['payable_amount'] = item.get('total_payable', 0.0)
 
                         # 转换时间
-                        for key in ['first_bill_date', 'last_bill_date']:
+                        for key in ['payment_schedule_date', 'first_bill_date', 'last_bill_date']:
                             if item.get(key):
                                 item[key] = str(item[key])
 
@@ -1542,6 +1552,7 @@ class BalanceService:
                     payee_name=payee_name,
                     driver_phone=driver_phone,
                     fuzzy_keywords=fuzzy_keywords,
+                    payment_schedule_date=payment_schedule_date,
                     min_balance=min_balance,
                     payment_status=payment_status,
                     page=page,
@@ -2022,6 +2033,7 @@ class BalanceService:
             self,
             reporter_name: str = None,
             fuzzy_keywords: str = None,
+            payment_schedule_date: str = None,
             min_balance: float = 0.01,
             payment_status: int = None,
             page: int = 1,
@@ -2039,12 +2051,17 @@ class BalanceService:
                         "NULLIF(TRIM(d.shipper), ''), "
                         "CONCAT('未关联发货人#', b.delivery_id))"
                     )
+                    schedule_date_expr = "COALESCE(b.schedule_date, w.payment_schedule_date)"
                     where_clauses = ["1=1"]
                     params = []
 
                     if reporter_name:
                         where_clauses.append(f"{reporter_expr} = %s")
                         params.append(reporter_name)
+
+                    if payment_schedule_date:
+                        where_clauses.append(f"{schedule_date_expr} = %s")
+                        params.append(payment_schedule_date)
 
                     if payment_status is not None:
                         where_clauses.append("b.payment_status = %s")
@@ -2076,6 +2093,7 @@ class BalanceService:
                             SELECT {reporter_expr} as reporter_name
                             FROM pd_balance_details b
                             LEFT JOIN pd_deliveries d ON d.id = b.delivery_id
+                            LEFT JOIN pd_weighbills w ON w.id = b.weighbill_id
                             WHERE {where_sql}
                             GROUP BY {reporter_expr}
                         ) t
@@ -2087,6 +2105,7 @@ class BalanceService:
                     query_sql = f"""
                         SELECT 
                             {reporter_expr} as reporter_name,
+                            MAX({schedule_date_expr}) as payment_schedule_date,
                             COUNT(*) as bill_count,
                             SUM(b.payable_amount) as total_payable,
                             SUM(b.paid_amount) as total_paid,
@@ -2099,6 +2118,7 @@ class BalanceService:
                             SUM(CASE WHEN b.payment_status = 1 THEN 1 ELSE 0 END) as partial_count
                         FROM pd_balance_details b
                         LEFT JOIN pd_deliveries d ON d.id = b.delivery_id
+                        LEFT JOIN pd_weighbills w ON w.id = b.weighbill_id
                         WHERE {where_sql}
                         GROUP BY {reporter_expr}
                         ORDER BY total_balance DESC, last_bill_date DESC
@@ -2118,7 +2138,7 @@ class BalanceService:
                         # 应打款金额（按报单人汇总）
                         item['payable_amount'] = item.get('total_payable', 0.0)
 
-                        for key in ['first_bill_date', 'last_bill_date']:
+                        for key in ['payment_schedule_date', 'first_bill_date', 'last_bill_date']:
                             if item.get(key):
                                 item[key] = str(item[key])
 
@@ -2154,6 +2174,7 @@ class BalanceService:
                 return self.list_balance_summary_by_reporter(
                     reporter_name=reporter_name,
                     fuzzy_keywords=fuzzy_keywords,
+                    payment_schedule_date=payment_schedule_date,
                     min_balance=min_balance,
                     payment_status=payment_status,
                     page=page,

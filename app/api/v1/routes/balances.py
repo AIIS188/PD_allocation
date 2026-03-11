@@ -141,6 +141,7 @@ class PayeeSummaryOut(BaseModel):
     """收款人汇总响应模型"""
     payee_name: str
     driver_phone: Optional[str] = None
+    payment_schedule_date: Optional[str] = None
     bill_count: int
     total_payable: float
     total_paid: float
@@ -157,6 +158,7 @@ class PayeeSummaryOut(BaseModel):
 class ReporterSummaryOut(BaseModel):
     """报单人/发货人汇总响应模型"""
     reporter_name: str
+    payment_schedule_date: Optional[str] = None
     bill_count: int
     total_payable: float
     total_paid: float
@@ -645,14 +647,15 @@ async def list_payment_receipts(
 
 @router.get("/summary/by-payee", response_model=dict)
 async def list_balance_by_payee(
-        payee_name: Optional[str] = Query(None, description="精确收款人姓名"),
-        driver_phone: Optional[str] = Query(None, description="精确司机电话"),
-        fuzzy_keywords: Optional[str] = Query(None, description="模糊关键词（姓名/电话/车牌/合同号）"),
-        min_balance: Optional[float] = Query(0.01, description="最小结余金额，默认0.01"),
-        payment_status: Optional[int] = Query(None, description="0=待支付, 1=部分支付, 不传则显示有结余的"),
-        page: int = Query(1, ge=1),
-        page_size: int = Query(20, ge=1, le=100),
-        service: BalanceService = Depends(get_balance_service)
+    payee_name: Optional[str] = Query(None, description="精确收款人姓名"),
+    driver_phone: Optional[str] = Query(None, description="精确司机电话"),
+    fuzzy_keywords: Optional[str] = Query(None, description="模糊关键词（姓名/电话/车牌/合同号）"),
+    payment_schedule_date: Optional[str] = Query(None, description="排款日期（YYYY-MM-DD）"),
+    min_balance: Optional[float] = Query(0.01, description="最小结余金额，默认0.01"),
+    payment_status: Optional[int] = Query(None, description="0=待支付, 1=部分支付, 不传则显示有结余的"),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    service: BalanceService = Depends(get_balance_service)
 ):
     """
     按收款人汇总统计结余
@@ -684,6 +687,7 @@ async def list_balance_by_payee(
         payee_name=payee_name,
         driver_phone=driver_phone,
         fuzzy_keywords=fuzzy_keywords,
+        payment_schedule_date=payment_schedule_date,
         min_balance=min_balance,
         payment_status=payment_status,
         page=page,
@@ -698,13 +702,14 @@ async def list_balance_by_payee(
 
 @router.get("/summary/by-shipper", response_model=dict)
 async def list_balance_by_reporter(
-        reporter_name: Optional[str] = Query(None, description="精确报单人/发货人"),
-        fuzzy_keywords: Optional[str] = Query(None, description="模糊关键词（姓名/电话/车牌/合同号）"),
-        min_balance: Optional[float] = Query(0.01, description="最小结余金额，默认0.01"),
-        payment_status: Optional[int] = Query(None, description="0=待支付, 1=部分支付, 不传则显示有结余的"),
-        page: int = Query(1, ge=1),
-        page_size: int = Query(20, ge=1, le=100),
-        service: BalanceService = Depends(get_balance_service)
+    reporter_name: Optional[str] = Query(None, description="精确报单人/发货人"),
+    fuzzy_keywords: Optional[str] = Query(None, description="模糊关键词（姓名/电话/车牌/合同号）"),
+    payment_schedule_date: Optional[str] = Query(None, description="排款日期（YYYY-MM-DD）"),
+    min_balance: Optional[float] = Query(0.01, description="最小结余金额，默认0.01"),
+    payment_status: Optional[int] = Query(None, description="0=待支付, 1=部分支付, 不传则显示有结余的"),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    service: BalanceService = Depends(get_balance_service)
 ):
     """
     按报单人/发货人汇总统计结余
@@ -717,6 +722,7 @@ async def list_balance_by_reporter(
     result = service.list_balance_summary_by_reporter(
         reporter_name=reporter_name,
         fuzzy_keywords=fuzzy_keywords,
+        payment_schedule_date=payment_schedule_date,
         min_balance=min_balance,
         payment_status=payment_status,
         page=page,
