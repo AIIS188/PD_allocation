@@ -59,6 +59,22 @@ def create_database_if_not_exists():
 		connection.close()
 
 
+def build_product_categories_table_statement() -> str:
+	"""构建固定 50 个品类槽位的品类表。"""
+	category_columns = "\n".join(
+		f"\t\tcategory_{index} VARCHAR(64) DEFAULT NULL COMMENT '品类槽位{index}',"
+		for index in range(1, 51)
+	)
+	return f"""
+	CREATE TABLE IF NOT EXISTS pd_product_categories (
+		id BIGINT AUTO_INCREMENT PRIMARY KEY COMMENT '主键ID',
+	{category_columns}
+		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+		updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间'
+	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='固定50槽位品类表';
+	"""
+
+
 TABLE_STATEMENTS = [
 	# ========== 原有表 ==========
 	"""
@@ -70,6 +86,7 @@ TABLE_STATEMENTS = [
 		role VARCHAR(32) NOT NULL COMMENT '角色',
 		phone VARCHAR(32) COMMENT '手机号',
 		email VARCHAR(128) COMMENT '邮箱',
+		status TINYINT DEFAULT 0 COMMENT '状态：0=正常, 1=冻结, 2=已注销',
 		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
 		updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
 		CHECK (role IN (
@@ -214,6 +231,15 @@ TABLE_STATEMENTS = [
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='磅单表';
 	""",
 	"""
+	CREATE TABLE IF NOT EXISTS pd_role_templates (
+		id BIGINT AUTO_INCREMENT PRIMARY KEY COMMENT '主键ID',
+		role VARCHAR(32) NOT NULL UNIQUE COMMENT '角色名称',
+		template_json TEXT NOT NULL COMMENT '权限模板JSON',
+		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+		updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间'
+	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='角色权限模板表';
+	""",
+	"""
 	CREATE TABLE IF NOT EXISTS pd_warehouse_payees (
 		id BIGINT AUTO_INCREMENT PRIMARY KEY COMMENT '主键ID',
 		warehouse_name VARCHAR(64) NOT NULL COMMENT '库房名称',
@@ -262,6 +288,7 @@ TABLE_STATEMENTS = [
 		INDEX idx_contract_id (contract_id)
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='合同品种表';
 	""",
+	build_product_categories_table_statement(),
 	# 磅单结余管理
 	"""
 	CREATE TABLE IF NOT EXISTS pd_payment_receipts (
@@ -398,6 +425,13 @@ TABLE_STATEMENTS = [
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='回款记录明细表';
 	""",
 	"""
+	CREATE TABLE IF NOT EXISTS pd_permission_definitions (
+		field_name VARCHAR(64) PRIMARY KEY COMMENT '权限字段名（如 perm_schedule）',
+		label VARCHAR(64) NOT NULL COMMENT '权限显示名称',
+		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间'
+	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='权限字段定义表';
+	""",
+	"""
 	-- 存储Excel导入的原始数据
 	CREATE TABLE IF NOT EXISTS pd_payment_excel_imports (
 		id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -415,8 +449,43 @@ TABLE_STATEMENTS = [
 		INDEX idx_imported_at (imported_at),
 		INDEX idx_company_type (company_type)
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='回款Excel导入明细记录';
-	"""
+"""
 ]
+
+def init_permission_definitions():
+	"""初始化默认权限字段定义（与原有的 PERMISSION_FIELDS/PERMISSION_LABELS 保持一致）"""
+	config = get_mysql_config()
+	connection = pymysql.connect(**config)
+	try:
+		with connection.cursor() as cursor:
+			default_perms = [
+				('perm_permission_manage', '权限管理'),
+				('perm_jinli_payment', '金利回款管理'),
+				('perm_yuguang_payment', '豫光回款管理'),
+				('perm_schedule', '排期管理'),
+				('perm_payout', '打款管理'),
+				('perm_payout_stats', '打款统计'),
+				('perm_report_stats', '统计与报表'),
+				('perm_contract_progress', '合同发运进度'),
+				('perm_contract_manage', '销售合同管理'),
+				('perm_customer_manage', '客户管理'),
+				('perm_delivery_manage', '报货管理'),
+				('perm_weighbill_manage', '磅单管理'),
+				('perm_warehouse_manage', '库房和收款人信息管理'),
+				('perm_account_manage', '账号管理'),
+				('perm_role_manage', '角色管理'),
+				('perm_ai_detect', 'AI检测'),
+				('perm_ai_predict', 'AI预测'),
+			]
+			for field, label in default_perms:
+				cursor.execute(
+					"INSERT IGNORE INTO pd_permission_definitions (field_name, label) VALUES (%s, %s)",
+					(field, label)
+				)
+		connection.commit()
+		print("默认权限字段定义初始化完成")
+	finally:
+		connection.close()
 
 
 def create_tables() -> None:
@@ -431,6 +500,7 @@ def create_tables() -> None:
 			for statement in TABLE_STATEMENTS:
 				cursor.execute(statement)
 		print("所有数据表创建完成")
+		init_permission_definitions()
 	finally:
 		connection.close()
 
