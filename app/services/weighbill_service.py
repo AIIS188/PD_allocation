@@ -1186,12 +1186,37 @@ class WeighbillService:
                         for key in ["weigh_date", "delivery_time", "created_at", "updated_at", "uploaded_at"]:
                             if wb.get(key):
                                 wb[key] = str(wb[key])
-                        for key in ["gross_weight", "tare_weight", "net_weight", "unit_price", "total_amount", "service_fee"]:
+                        for key in ["gross_weight", "tare_weight", "net_weight", "unit_price", "total_amount",
+                                    "service_fee"]:
                             if wb.get(key):
                                 wb[key] = float(wb[key])
 
                         if wb.get("warehouse_name") is None:
                             wb["warehouse_name"] = wb.get("warehouse")
+
+                        # ========== 新增：计算应付金额和回款金额 ==========
+                        unit_price_val = wb.get("unit_price")
+                        net_weight_val = wb.get("net_weight")
+                        service_fee_val = wb.get("service_fee") or 0
+
+                        if unit_price_val and net_weight_val:
+                            unit_price_d = Decimal(str(unit_price_val))
+                            net_weight_d = Decimal(str(net_weight_val))
+                            service_fee_d = Decimal(str(service_fee_val))
+
+                            # 应付金额 = 合同单价 / 1.048 * 磅单净重 - 联单费
+                            payable_calc = (unit_price_d / Decimal('1.048') * net_weight_d - service_fee_d).quantize(
+                                Decimal('0.01'), rounding=ROUND_HALF_UP)
+                            wb["payable_amount_calculated"] = float(payable_calc)
+
+                            # 回款金额 = 合同单价 * 磅单净重 - 联单费
+                            receivable_calc = (unit_price_d * net_weight_d - service_fee_d).quantize(Decimal('0.01'),
+                                                                                                     rounding=ROUND_HALF_UP)
+                            wb["receivable_amount_calculated"] = float(receivable_calc)
+                        else:
+                            wb["payable_amount_calculated"] = None
+                            wb["receivable_amount_calculated"] = None
+                        # ========== 新增结束 ==========
 
                         # 应打款金额：优先使用结余表应付金额；无结余时按公式估算
                         if wb.get("balance_payable_amount") is not None:
@@ -1200,7 +1225,8 @@ class WeighbillService:
                             net_weight = Decimal(str(wb.get("net_weight") or 0))
                             unit_price = Decimal(str(wb.get("unit_price") or 0))
                             wb["payable_amount"] = float(
-                                (net_weight * unit_price / Decimal('1.03')).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+                                (net_weight * unit_price / Decimal('1.03')).quantize(Decimal('0.01'),
+                                                                                     rounding=ROUND_HALF_UP)
                             )
 
                         wb["is_manual_corrected_display"] = "是" if wb.get("is_manual_corrected") == 1 else "否"
@@ -1242,9 +1268,11 @@ class WeighbillService:
                         if delivery.get('products'):
                             delivery['products'] = [p.strip() for p in delivery['products'].split(',') if p.strip()]
                         else:
-                            delivery['products'] = [delivery.get('product_name')] if delivery.get('product_name') else []
+                            delivery['products'] = [delivery.get('product_name')] if delivery.get(
+                                'product_name') else []
 
-                        delivery["has_delivery_order_display"] = "是" if delivery.get("has_delivery_order") == "有" else "否"
+                        delivery["has_delivery_order_display"] = "是" if delivery.get(
+                            "has_delivery_order") == "有" else "否"
                         delivery["upload_status_display"] = "是" if delivery.get("upload_status") == "已上传" else "否"
                         if delivery.get('service_fee'):
                             delivery['service_fee'] = float(delivery['service_fee'])
@@ -1263,6 +1291,8 @@ class WeighbillService:
                                     "ocr_status": "待上传磅单",
                                     "ocr_status_display": "待上传磅单",
                                     "upload_status": "待上传",
+                                    "payable_amount_calculated": None,
+                                    "receivable_amount_calculated": None,
                                     "operations": {"can_upload": True, "can_modify": False, "can_view": False}
                                 })
 
