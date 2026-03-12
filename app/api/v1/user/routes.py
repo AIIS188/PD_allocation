@@ -1114,4 +1114,4 @@ def delete_payee(
             cur.execute("DELETE FROM pd_payees WHERE id=%s", (payee_id,))
             conn.commit()
     
-    return {"success": True, "message": "收款人删除成功"}
+    return {"success": True, "message": "收款人删除成功"} 

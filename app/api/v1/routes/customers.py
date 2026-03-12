@@ -48,7 +48,7 @@ class WarehousePayeeUpdateRequest(BaseModel):
 
     warehouse_id: Optional[int] = Field(None, description="库房ID，可选")
     warehouse_name: Optional[str] = Field(None, description="库房名称，可选", max_length=100)
-    payee_name: Optional[str] = Field(None, min_length=1, max_length=100, description="收款人姓名")
+    payee_name: Optional[str] = Field(None, min_length=1, max_length=100, description="收款人姓名") 
     payee_account: Optional[str] = Field(None, max_length=100, description="收款账号")
     payee_bank_name: Optional[str] = Field(None, max_length=100, description="开户行")
     is_active: Optional[int] = Field(None, ge=0, le=1, description="是否启用: 1启用, 0禁用")

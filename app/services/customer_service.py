@@ -98,7 +98,7 @@ class CustomerService:
         page: int = 1,
         page_size: int = 20,
     ) -> Dict[str, Any]:
-        """查询收款员信息列表"""
+        """查询收款员信息列表""" 
         try:
             with get_conn() as conn:
                 # 使用 DictCursor 直接返回字典格式
