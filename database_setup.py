@@ -456,6 +456,7 @@ TABLE_STATEMENTS = [
 		imported_by BIGINT COMMENT '导入人ID',
 		imported_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 		status VARCHAR(20) DEFAULT 'success' COMMENT '处理状态：success/failed',
+		fail_reason VARCHAR(500) DEFAULT NULL COMMENT '失败原因',
 		INDEX idx_weighbill_no (weighbill_no),
 		INDEX idx_payment_detail_id (payment_detail_id),
 		INDEX idx_imported_at (imported_at),

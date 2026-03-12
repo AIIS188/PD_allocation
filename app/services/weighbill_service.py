@@ -1311,6 +1311,10 @@ class WeighbillService:
 
                         # 如果没有磅单记录，创建待上传占位
                         if not weighbills:
+                            # 当查询特定 ocr_status 且不是"待上传磅单"时，跳过该报单
+                            if exact_ocr_status and exact_ocr_status != "待上传磅单":
+                                continue  # 不将该报单加入结果
+
                             for product in delivery.get('products', []):
                                 weighbills.append({
                                     "id": None,
@@ -1325,7 +1329,6 @@ class WeighbillService:
                                     "receivable_amount_calculated": None,
                                     "operations": {"can_upload": True, "can_modify": False, "can_view": False}
                                 })
-
                         result_data.append({
                             "delivery_id": delivery_id,
                             "contract_no": delivery.get("contract_no"),

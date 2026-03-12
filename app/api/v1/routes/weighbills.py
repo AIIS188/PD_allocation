@@ -532,7 +532,7 @@ async def list_weighbills(
     exact_driver_name: Optional[str] = Query(None, description="精确司机姓名"),
     exact_vehicle_no: Optional[str] = Query(None, description="精确车号"),
     exact_weigh_date: Optional[str] = Query(None, description="精确磅单日期"),
-    exact_ocr_status: Optional[str] = Query(None, description="精确磅单状态：待上传磅单/已上传磅单"),
+    exact_ocr_status: Optional[str] = Query(None, description="精确磅单状态：待上传磅单/已确认"),
         page: int = Query(1, ge=1),
         page_size: int = Query(20, ge=1, le=100),
         service: WeighbillService = Depends(get_weighbill_service)
