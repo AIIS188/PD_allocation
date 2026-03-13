@@ -308,6 +308,7 @@ TABLE_STATEMENTS = [
 		id BIGINT AUTO_INCREMENT PRIMARY KEY COMMENT '主键ID',
 		receipt_no VARCHAR(64) COMMENT '银行回单流水号',
 		receipt_image VARCHAR(255) NOT NULL COMMENT '回单图片存储路径',
+		receipt_images TEXT COMMENT '所有回单图片路径JSON数组',
 		payment_date DATE NOT NULL COMMENT '支付日期',
 		payment_time TIME COMMENT '支付时间',
 		payer_name VARCHAR(64) COMMENT '付款人姓名',

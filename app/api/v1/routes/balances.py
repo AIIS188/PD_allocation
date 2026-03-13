@@ -490,52 +490,80 @@ async def ocr_payment_receipt(
 
 @router.post("/payment-receipts", summary="保存支付回单", response_model=dict)
 async def create_payment_receipt(
-    request: Optional[PaymentReceiptCreateRequest] = Body(None),
-    request_json: Optional[str] = Form(None, description="回单数据JSON字符串"),
-        receipt_image: UploadFile = File(..., description="回单图片（必填）"),
+        request: Optional[str] = Form(None, description="回单数据JSON字符串（与request_json二选一）"),
+        request_json: Optional[str] = Form(None, description="回单数据JSON字符串（与request二选一）"),
+        files: List[UploadFile] = File(..., description="回单图片，最多6张（必填）"),
         is_manual: bool = Form(True),
         service: BalanceService = Depends(get_balance_service)
 ):
     """
     保存支付回单（OCR后确认或纯手动录入）
+    支持上传最多6张回单图片。
     """
+    # 提前初始化 saved_paths，确保异常处理中可用
+    saved_paths = []
     try:
-        if request is None:
-            if not request_json:
-                raise HTTPException(status_code=422, detail="缺少回单数据")
-            try:
-                request = PaymentReceiptCreateRequest(**json.loads(request_json))
-            except json.JSONDecodeError as exc:
-                raise HTTPException(status_code=400, detail=f"request_json不是合法JSON: {exc.msg}")
-            except ValidationError as exc:
-                raise HTTPException(status_code=422, detail=exc.errors())
+        # 合并请求数据：优先使用 request_json，若为空则使用 request
+        json_str = request_json if request_json else request
+        if not json_str:
+            raise HTTPException(status_code=422, detail="缺少回单数据，请提供 request 或 request_json")
 
-        data = request.dict()
+        try:
+            data_dict = json.loads(json_str)
+        except json.JSONDecodeError as exc:
+            raise HTTPException(status_code=400, detail=f"JSON解析失败: {exc.msg}")
 
-        # 保存图片
-        file_ext = Path(receipt_image.filename).suffix.lower() or ".jpg"
-        safe_payee = re.sub(r'[^\w\-]', '_', request.payee_name)
-        filename = f"receipt_{safe_payee}_{request.payment_date}_{os.urandom(4).hex()[:8]}{file_ext}"
-        file_path = UPLOAD_DIR / filename
+        # 验证数据模型
+        try:
+            create_request = PaymentReceiptCreateRequest(**data_dict)
+        except ValidationError as exc:
+            raise HTTPException(status_code=422, detail=exc.errors())
 
-        file_path.parent.mkdir(parents=True, exist_ok=True)
+        # 检查文件数量
+        if len(files) == 0:
+            raise HTTPException(status_code=400, detail="至少上传一张回单图片")
+        if len(files) > 6:
+            raise HTTPException(status_code=400, detail="最多上传6张回单图片")
 
-        with open(file_path, "wb") as buffer:
-            shutil.copyfileobj(receipt_image.file, buffer)
+        # 验证文件类型
+        allowed_types = ["image/jpeg", "image/jpg", "image/png", "image/bmp"]
+        for file in files:
+            if file.content_type not in allowed_types:
+                raise HTTPException(status_code=400, detail=f"文件 {file.filename} 格式不支持，仅支持jpg/png/bmp")
 
-        result = service.create_payment_receipt(data, str(file_path), is_manual)
+        data = create_request.dict()
+
+        # 保存所有图片
+        for idx, file in enumerate(files):
+            file_ext = Path(file.filename).suffix.lower() or ".jpg"
+            safe_payee = re.sub(r'[^\w\-]', '_', create_request.payee_name)
+            filename = f"receipt_{safe_payee}_{create_request.payment_date}_{idx}_{os.urandom(4).hex()[:8]}{file_ext}"
+            file_path = UPLOAD_DIR / filename
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+
+            with open(file_path, "wb") as buffer:
+                shutil.copyfileobj(file.file, buffer)
+            saved_paths.append(str(file_path))
+
+        # 调用服务创建记录
+        result = service.create_payment_receipt(data, saved_paths, is_manual)
 
         if result["success"]:
             return result
         else:
-            # 失败时删除图片
-            if file_path.exists():
-                os.remove(file_path)
+            # 失败时删除已保存的图片
+            for path in saved_paths:
+                if os.path.exists(path):
+                    os.remove(path)
             raise HTTPException(status_code=400, detail=result.get("error"))
 
     except HTTPException:
         raise
     except Exception as e:
+        # 异常时删除已保存的图片
+        for path in saved_paths:
+            if os.path.exists(path):
+                os.remove(path)
         raise HTTPException(status_code=500, detail=str(e))
 
 

@@ -1021,9 +1021,9 @@ class BalanceService:
 
     # ========== CRUD操作 ==========
 
-    def create_payment_receipt(self, data: Dict, image_path: str,
+    def create_payment_receipt(self, data: Dict, image_paths: List[str],
                                is_manual: bool = False) -> Dict[str, Any]:
-        """创建支付回单记录"""
+        """创建支付回单记录，支持多张图片"""
         try:
             # 自动计算合计金额（如果未提供）
             amount = Decimal(str(data.get('amount', 0)))
@@ -1035,18 +1035,25 @@ class BalanceService:
             else:
                 total_amount = Decimal(str(total_amount))
 
+            # 主图片路径为第一个
+            main_image_path = image_paths[0] if image_paths else ''
+            # 所有图片路径存为JSON
+            import json
+            images_json = json.dumps(image_paths, ensure_ascii=False)
+
             with get_conn() as conn:
                 with conn.cursor() as cur:
                     cur.execute("""
                         INSERT INTO pd_payment_receipts 
-                        (receipt_no, receipt_image, payment_date, payment_time,
+                        (receipt_no, receipt_image, receipt_images, payment_date, payment_time,
                          payer_name, payer_account, payee_name, payee_account,
                          amount, fee, total_amount, bank_name, payee_bank_name, remark, 
                          ocr_status, ocr_raw_data, is_manual_corrected)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """, (
                         data.get('receipt_no'),
-                        image_path,
+                        main_image_path,
+                        images_json,
                         data.get('payment_date'),
                         data.get('payment_time'),
                         data.get('payer_name'),
@@ -1055,7 +1062,7 @@ class BalanceService:
                         data.get('payee_account'),
                         amount,
                         fee,
-                        total_amount,  # 新增
+                        total_amount,
                         data.get('bank_name'),
                         data.get('payee_bank_name'),
                         data.get('remark'),
