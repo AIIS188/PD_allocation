@@ -166,6 +166,7 @@ TABLE_STATEMENTS = [
 		driver_id_card VARCHAR(18) COMMENT '司机身份证号',
 		has_delivery_order ENUM('有', '无') DEFAULT '无' COMMENT '是否有联单',
 		delivery_order_image VARCHAR(255) COMMENT '联单图片路径',
+		delivery_order_pdf VARCHAR(255) DEFAULT NULL COMMENT '联单PDF文件路径',
 		voucher_images JSON DEFAULT NULL COMMENT '凭证图片路径数组，最多6张，仅在 has_delivery_order="无" 时使用',
 		upload_status ENUM('已上传', '待上传') DEFAULT '待上传' COMMENT '联单上传状态',
 		source_type ENUM('司机', '公司') DEFAULT '公司' COMMENT '来源：司机/公司',

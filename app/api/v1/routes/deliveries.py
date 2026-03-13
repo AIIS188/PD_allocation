@@ -548,7 +548,7 @@ async def view_delivery_order(
     delivery_id: int,
     service: DeliveryService = Depends(get_delivery_service)
 ):
-    """查看联单图片"""
+    """查看联单图片（仅支持图片格式，PDF 请使用 /view-pdf 接口）"""
     try:
         delivery = service.get_delivery(delivery_id)
         if not delivery:
@@ -556,22 +556,43 @@ async def view_delivery_order(
 
         image_path = delivery.get("delivery_order_image")
         if not image_path:
-            raise HTTPException(status_code=404, detail="该订单没有上传联单图片")
+            raise HTTPException(status_code=404, detail="该订单没有上传联单文件")
 
         if not os.path.exists(image_path):
-            raise HTTPException(status_code=404, detail="联单图片文件不存在")
+            raise HTTPException(status_code=404, detail="联单文件不存在")
 
-        return FileResponse(
-            path=image_path,
-            media_type="image/jpeg",
-            filename=f"delivery_order_{delivery_id}.jpg"
-        )
+        # 获取文件扩展名（小写）
+        ext = os.path.splitext(image_path)[1].lower()
+
+        # 定义图片扩展名集合
+        image_exts = {'.jpg', '.jpeg', '.png', '.bmp', '.webp', '.gif'}
+
+        if ext == '.pdf':
+            # 如果是 PDF，返回错误并提示使用 PDF 接口
+            raise HTTPException(
+                status_code=400,
+                detail="该联单为 PDF 格式，请使用 /view-pdf 接口预览"
+            )
+        elif ext in image_exts:
+            # 图片格式，正常返回
+            return FileResponse(
+                path=image_path,
+                media_type=f"image/{ext[1:]}",  # 如 image/jpeg
+                filename=f"delivery_order_{delivery_id}{ext}"
+            )
+        else:
+            # 其他未知格式，作为通用二进制文件返回
+            return FileResponse(
+                path=image_path,
+                media_type="application/octet-stream",
+                filename=f"delivery_order_{delivery_id}{ext}"
+            )
 
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"获取联单图片失败: {str(e)}")
-
+        logger.exception(f"查看联单文件失败: {e}")
+        raise HTTPException(status_code=500, detail=f"查看失败: {str(e)}")
 
 @router.get("/{delivery_id}/image", summary="查看联单图片（兼容旧接口）")
 async def get_delivery_image(
@@ -968,33 +989,65 @@ async def batch_upload_delivery_orders(
         raise HTTPException(status_code=500, detail=f"批量上传失败: {str(e)}")
 
 
-@router.post(
-    "/{delivery_id}/upload-order-pdf",
-    summary="上传联单PDF文件",          # 中文标题
-    description="上传联单的PDF版本，支持PDF格式。如果已上传联单，则返回错误。"
-)
+@router.post("/{delivery_id}/upload-pdf", summary="上传联单PDF")
 async def upload_delivery_pdf(
     delivery_id: int,
     file: UploadFile = File(...),
     current_user: dict = Depends(get_current_user),
-    delivery_service: DeliveryService = Depends(get_delivery_service)
+    service: DeliveryService = Depends(get_delivery_service)
 ):
-    """上传联单 PDF 文件"""
-    # 验证文件类型
+    """上传联单 PDF 文件（仅支持 PDF 格式）"""
     if file.content_type != "application/pdf":
         raise HTTPException(status_code=400, detail="只支持 PDF 文件")
-
-    # 读取文件内容
     contents = await file.read()
-
-    # 调用服务方法
-    result = delivery_service.upload_delivery_pdf(
-        delivery_id=delivery_id,
-        pdf_bytes=contents,
-        uploaded_by=current_user.get("name")  # 或根据业务传递身份
-    )
-
+    result = service.upload_delivery_pdf(delivery_id, contents, uploaded_by=current_user.get("name"))
     if not result["success"]:
         raise HTTPException(status_code=400, detail=result["error"])
+    return result
 
+@router.put("/{delivery_id}/modify-pdf", summary="修改联单PDF")
+async def modify_delivery_pdf(
+    delivery_id: int,
+    file: UploadFile = File(...),
+    current_user: dict = Depends(get_current_user),
+    service: DeliveryService = Depends(get_delivery_service)
+):
+    """替换联单 PDF 文件（覆盖原有）"""
+    if file.content_type != "application/pdf":
+        raise HTTPException(status_code=400, detail="只支持 PDF 文件")
+    contents = await file.read()
+    result = service.update_delivery_pdf(delivery_id, contents, uploaded_by=current_user.get("name"))
+    if not result["success"]:
+        raise HTTPException(status_code=400, detail=result["error"])
+    return result
+
+@router.get("/{delivery_id}/view-pdf", summary="预览联单PDF")
+async def view_delivery_pdf(
+    delivery_id: int,
+    service: DeliveryService = Depends(get_delivery_service),
+    current_user: dict = Depends(get_current_user)
+):
+    """预览已上传的联单 PDF 文件"""
+    delivery = service.get_delivery(delivery_id)
+    if not delivery:
+        raise HTTPException(status_code=404, detail="订单不存在")
+    pdf_path = delivery.get("delivery_order_pdf")  # 如果您已分离字段
+    # 或暂时仍从 delivery_order_image 读取，但要校验扩展名
+    if not pdf_path or not os.path.exists(pdf_path):
+        raise HTTPException(status_code=404, detail="PDF 文件不存在")
+    ext = os.path.splitext(pdf_path)[1].lower()
+    if ext != '.pdf':
+        raise HTTPException(status_code=400, detail="文件不是 PDF 格式")
+    return FileResponse(pdf_path, media_type="application/pdf", filename=f"delivery_{delivery_id}.pdf")
+
+@router.delete("/{delivery_id}/pdf", summary="删除联单PDF")
+async def delete_delivery_pdf(
+    delivery_id: int,
+    service: DeliveryService = Depends(get_delivery_service),
+    current_user: dict = Depends(get_current_user)
+):
+    """删除联单 PDF 文件"""
+    result = service.delete_delivery_pdf(delivery_id)
+    if not result["success"]:
+        raise HTTPException(status_code=400, detail=result["error"])
     return result

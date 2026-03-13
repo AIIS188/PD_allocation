@@ -1228,7 +1228,6 @@ class DeliveryService:
         return results
 
     def get_delivery(self, delivery_id: int) -> Optional[Dict]:
-        """获取订单详情（包含多车信息）"""
         try:
             with get_conn() as conn:
                 with conn.cursor() as cur:
@@ -1303,8 +1302,15 @@ class DeliveryService:
                         data.get('delivery_order_image')
                     )
 
-                    return data
+                    # ========== 新增部分：处理 PDF 字段 ==========
+                    # 添加一个布尔标志，方便前端判断
+                    data['has_pdf'] = bool(data.get('delivery_order_pdf'))
+                    # 如果希望前端直接获取 PDF 文件名，也可以添加：
+                    if data.get('delivery_order_pdf'):
+                        data['pdf_filename'] = os.path.basename(data['delivery_order_pdf'])
+                    # ========== 新增结束 ==========
 
+                    return data
         except Exception as e:
             logger.error(f"查询订单失败: {e}")
             return None
@@ -1774,87 +1780,108 @@ class DeliveryService:
         return result
 
     def upload_delivery_pdf(self, delivery_id: int, pdf_bytes: bytes, uploaded_by: str = None) -> Dict[str, Any]:
-        """上传联单 PDF 文件（只处理文件保存和状态更新，不修改其他字段）"""
+        """上传联单 PDF 文件，保存路径到 delivery_order_pdf"""
         try:
             with get_conn() as conn:
                 with conn.cursor() as cur:
-                    # 查询原报单
-                    cur.execute(
-                        "SELECT has_delivery_order, delivery_order_image, upload_status, vehicle_no FROM pd_deliveries WHERE id = %s",
-                        (delivery_id,)
-                    )
-                    old = cur.fetchone()
-                    if not old:
+                    # 查询报单（只需 vehicle_no 用于生成文件名）
+                    cur.execute("SELECT vehicle_no FROM pd_deliveries WHERE id = %s", (delivery_id,))
+                    row = cur.fetchone()
+                    if not row:
                         return {"success": False, "error": f"报单ID {delivery_id} 不存在"}
+                    vehicle_no = row['vehicle_no'] if isinstance(row, dict) else row[0]
 
-                    # 统一转换为字典
-                    if not isinstance(old, dict):
-                        old = {
-                            'has_delivery_order': old[0],
-                            'delivery_order_image': old[1],
-                            'upload_status': old[2],
-                            'vehicle_no': old[3]
-                        }
+                    # 检查 PDF 是否已存在（可选）
+                    cur.execute("SELECT delivery_order_pdf FROM pd_deliveries WHERE id = %s", (delivery_id,))
+                    existing = cur.fetchone()
+                    existing_pdf = existing['delivery_order_pdf'] if isinstance(existing, dict) else existing[0]
+                    if existing_pdf:
+                        return {"success": False, "error": "PDF 已存在，如需替换请使用修改接口"}
 
-                    # 检查是否已上传（可选：允许覆盖？根据业务决定）
-                    if old.get('upload_status') == '已上传':
-                        return {"success": False, "error": "联单已上传，如需替换请使用修改接口"}
-
-                    # 验证 PDF 格式（简单检查文件头）
-                    if not pdf_bytes.startswith(b'%PDF'):
-                        return {"success": False, "error": "文件不是有效的 PDF 格式"}
-
-                    # 生成文件名
-                    safe_name = re.sub(r'[^\w\-]', '_', str(old.get('vehicle_no', delivery_id)))
+                    # 保存 PDF 文件
+                    safe_name = re.sub(r'[^\w\-]', '_', str(vehicle_no or delivery_id))
                     filename = f"delivery_{safe_name}_{datetime.now().strftime('%Y%m%d%H%M%S')}_{uuid.uuid4().hex[:8]}.pdf"
                     file_path = UPLOAD_DIR / filename
-
-                    # 保存文件
                     with open(file_path, "wb") as f:
                         f.write(pdf_bytes)
 
-                    # 计算联单费（根据是否有联单，这里假设有联单则费用为0）
-                    has_order = old.get('has_delivery_order', '有')
-                    service_fee = self._calculate_service_fee(has_order)
-
-                    # 确定来源类型
-                    source_type = self._determine_source_type(has_order, uploaded_by)
-
-                    # 更新数据库（只更新文件相关字段）
+                    # 更新数据库：只更新 delivery_order_pdf，不改变图片相关字段
                     cur.execute("""
                         UPDATE pd_deliveries 
-                        SET delivery_order_image = %s,
-                            upload_status = '已上传',
-                            source_type = %s,
-                            service_fee = %s,
-                            uploaded_at = NOW(),
+                        SET delivery_order_pdf = %s,
                             updated_at = NOW()
                         WHERE id = %s
-                    """, (str(file_path), source_type, service_fee, delivery_id))
-
+                    """, (str(file_path), delivery_id))
                     conn.commit()
-
-                    # 删除旧文件（如果有）
-                    old_image = old.get('delivery_order_image')
-                    if old_image and os.path.exists(old_image):
-                        try:
-                            os.remove(old_image)
-                        except Exception as e:
-                            logger.warning(f"删除旧文件失败: {e}")
 
                     return {
                         "success": True,
-                        "message": "PDF 联单上传成功",
+                        "message": "PDF 上传成功",
                         "data": {
                             "delivery_id": delivery_id,
-                            "image_path": str(file_path),
-                            "upload_status": "已上传",
-                            "service_fee": float(service_fee),
-                            "source_type": source_type
+                            "pdf_path": str(file_path)
                         }
                     }
         except Exception as e:
             logger.error(f"上传 PDF 失败: {e}")
+            return {"success": False, "error": str(e)}
+
+    def update_delivery_pdf(self, delivery_id: int, pdf_bytes: bytes, uploaded_by: str = None) -> Dict[str, Any]:
+        """替换 PDF 文件（覆盖原有）"""
+        try:
+            with get_conn() as conn:
+                with conn.cursor() as cur:
+                    # 查询原 PDF 路径
+                    cur.execute("SELECT delivery_order_pdf, vehicle_no FROM pd_deliveries WHERE id = %s",
+                                (delivery_id,))
+                    row = cur.fetchone()
+                    if not row:
+                        return {"success": False, "error": "订单不存在"}
+                    old_pdf = row['delivery_order_pdf'] if isinstance(row, dict) else row[0]
+                    vehicle_no = row['vehicle_no'] if isinstance(row, dict) else row[1]
+
+                    # 保存新 PDF
+                    safe_name = re.sub(r'[^\w\-]', '_', str(vehicle_no or delivery_id))
+                    filename = f"delivery_{safe_name}_{datetime.now().strftime('%Y%m%d%H%M%S')}_{uuid.uuid4().hex[:8]}.pdf"
+                    file_path = UPLOAD_DIR / filename
+                    with open(file_path, "wb") as f:
+                        f.write(pdf_bytes)
+
+                    # 更新数据库
+                    cur.execute("UPDATE pd_deliveries SET delivery_order_pdf = %s WHERE id = %s",
+                                (str(file_path), delivery_id))
+                    conn.commit()
+
+                    # 删除旧文件
+                    if old_pdf and os.path.exists(old_pdf):
+                        os.remove(old_pdf)
+
+                    return {"success": True, "message": "PDF 替换成功", "pdf_path": str(file_path)}
+        except Exception as e:
+            logger.error(f"替换 PDF 失败: {e}")
+            return {"success": False, "error": str(e)}
+
+    def delete_delivery_pdf(self, delivery_id: int) -> Dict[str, Any]:
+        """删除 PDF 文件"""
+        try:
+            with get_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT delivery_order_pdf FROM pd_deliveries WHERE id = %s", (delivery_id,))
+                    row = cur.fetchone()
+                    if not row:
+                        return {"success": False, "error": "订单不存在"}
+                    pdf_path = row['delivery_order_pdf'] if isinstance(row, dict) else row[0]
+                    if not pdf_path:
+                        return {"success": False, "error": "该订单没有 PDF 文件"}
+
+                    cur.execute("UPDATE pd_deliveries SET delivery_order_pdf = NULL WHERE id = %s", (delivery_id,))
+                    conn.commit()
+
+                    if os.path.exists(pdf_path):
+                        os.remove(pdf_path)
+                    return {"success": True, "message": "PDF 删除成功"}
+        except Exception as e:
+            logger.error(f"删除 PDF 失败: {e}")
             return {"success": False, "error": str(e)}
 
 _delivery_service = None
