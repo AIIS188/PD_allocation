@@ -257,17 +257,17 @@ TABLE_STATEMENTS = [
 	"""
 	CREATE TABLE IF NOT EXISTS pd_payees (
 		id BIGINT AUTO_INCREMENT PRIMARY KEY COMMENT '主键ID',
-		warehouse_id BIGINT DEFAULT NULL COMMENT '所属库房ID（关联pd_warehouses.id），可为空',
+		warehouse_id BIGINT DEFAULT NULL COMMENT '所属库房ID，可选',
+		warehouse_name VARCHAR(100) DEFAULT NULL COMMENT '库房名称，可选',
 		payee_name VARCHAR(64) NOT NULL COMMENT '收款人姓名',
-		payee_account VARCHAR(32) NOT NULL COMMENT '收款账号',
-		payee_bank_name VARCHAR(64) COMMENT '收款银行名称',
+		payee_account VARCHAR(32) DEFAULT NULL COMMENT '收款账号',
+		payee_bank_name VARCHAR(64) DEFAULT NULL COMMENT '收款银行名称',
 		is_active TINYINT DEFAULT 1 COMMENT '是否启用：1=启用，0=停用',
 		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
 		updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
 		INDEX idx_warehouse_id (warehouse_id),
 		INDEX idx_payee_name (payee_name),
-		INDEX idx_is_active (is_active),
-		FOREIGN KEY (warehouse_id) REFERENCES pd_warehouses(id) ON DELETE SET NULL
+		INDEX idx_is_active (is_active)
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='收款人表';
 	""",
 	# ========== 新增合同管理表 ==========

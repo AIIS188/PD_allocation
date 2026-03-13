@@ -76,7 +76,7 @@ class CustomerService:
 
                     params.append(payee_id)
                     cur.execute(
-                        f"UPDATE pd_warehouse_payees SET {', '.join(update_fields)} WHERE id = %s",
+                        f"UPDATE pd_payees SET {', '.join(update_fields)} WHERE id = %s",
                         tuple(params),
                     )
                     conn.commit()  # 确保提交事务
