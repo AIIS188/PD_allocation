@@ -988,10 +988,14 @@ class DeliveryService:
             with get_conn() as conn:
                 with conn.cursor() as cur:
                     # 查询现有凭证
-                    cur.execute("SELECT voucher_images, vehicle_no FROM pd_deliveries WHERE id = %s", (delivery_id,))
+                    cur.execute(
+                        "SELECT has_delivery_order, voucher_images, vehicle_no FROM pd_deliveries WHERE id = %s",
+                        (delivery_id,))
                     row = cur.fetchone()
                     if not row:
                         return {"success": False, "error": "订单不存在"}
+                    if row['has_delivery_order'] == '有':
+                        return {"success": False, "error": "有联单的订单不能上传凭证图片"}
                     if isinstance(row, dict):
                         existing = row.get('voucher_images')
                         vehicle_no = vehicle_no or row.get('vehicle_no')
