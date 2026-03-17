@@ -35,6 +35,22 @@ class DeliveryService:
             api_key=os.getenv("DASHSCOPE_API_KEY"),
             base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
         )
+        self.owner_to_mill_mapping = {
+        "电动": "电动车",
+        "黑皮": "黑皮",
+        "EFB": "黑皮",
+        "电轿": "新能源",
+        "AGM": "新能源",
+        "电信": "通信",
+        "摩托车": "摩托车",
+        "小四斤": "摩托车",
+        "大白": "大白",
+        "管式": "牵引"
+    }
+        
+    def _convert_to_mill_product(self, owner_product: str) -> str:
+        """将货主品种转换为冶炼厂品种（用于合同匹配）"""
+        return self.owner_to_mill_mapping.get(owner_product, owner_product)
 
     def _normalize_driver_id_card(self, value: Optional[Any]) -> Optional[str]:
         """清洗司机身份证号，避免将无效超长值写入数据库。"""
@@ -267,9 +283,12 @@ class DeliveryService:
                                     'skipped_contracts': []
                                 }
                     # Step 1: 品种匹配（只匹配unit_price>0的有效品种）
+                    # ===== 需求3：优先匹配最先到期的合同 =====
                     cur.execute("""
                         SELECT c.contract_no, p.unit_price, c.total_quantity,
-                               FLOOR(c.total_quantity / 35) as contract_trucks
+                               FLOOR(c.total_quantity / 35) as contract_trucks,
+                               c.contract_date,
+                               c.end_date
                         FROM pd_contracts c
                         JOIN pd_contract_products p ON p.contract_id = c.id
                         WHERE c.smelter_company = %s
@@ -278,9 +297,8 @@ class DeliveryService:
                         AND c.status = '生效中'
                         AND c.contract_date <= %s
                         AND (c.end_date IS NULL OR c.end_date >= %s)
-                        ORDER BY c.contract_date ASC, c.created_at ASC, p.sort_order ASC
+                        ORDER BY c.end_date ASC, c.contract_date ASC, p.sort_order ASC
                     """, (factory_name, product_name, effective_date, effective_date))
-
                     matching_contracts = cur.fetchall()
 
                     if not matching_contracts:
@@ -300,6 +318,55 @@ class DeliveryService:
                         unit_price = contract.get("unit_price")
                         contract_trucks = int(contract.get("contract_trucks") or 0)
 
+                        # ===== 需求1：检查报单日期是否在合同有效期内 =====
+                        from datetime import datetime
+                        contract_date = contract.get("contract_date")
+                        end_date = contract.get("end_date")
+                        
+                        # 报单日期有效性检查
+                        try:
+                            report_date_obj = datetime.strptime(report_date, "%Y-%m-%d").date()
+                        except (ValueError, TypeError):
+                            report_date_obj = datetime.today().date()
+                        
+                        # 检查是否在合同开始日期之后
+                        if contract_date:
+                            try:
+                                contract_date_obj = datetime.strptime(str(contract_date), "%Y-%m-%d").date()
+                                if report_date_obj < contract_date_obj:
+                                    skipped_contracts.append({
+                                        'index': idx + 1,
+                                        'contract_no': contract_no,
+                                        'unit_price': float(unit_price) if unit_price else None,
+                                        'total_trucks': contract_trucks,
+                                        'used_trucks': 0,
+                                        'remaining_trucks': contract_trucks,
+                                        'need_trucks': planned_trucks,
+                                        'skip_reason': f'报单日期{report_date}早于合同开始日期{contract_date}'
+                                    })
+                                    continue  # 跳过该合同，继续下一个
+                            except (ValueError, TypeError):
+                                pass
+                        
+                        # 检查是否在合同截止日期之前
+                        if end_date:
+                            try:
+                                end_date_obj = datetime.strptime(str(end_date), "%Y-%m-%d").date()
+                                if report_date_obj > end_date_obj:
+                                    skipped_contracts.append({
+                                        'index': idx + 1,
+                                        'contract_no': contract_no,
+                                        'unit_price': float(unit_price) if unit_price else None,
+                                        'total_trucks': contract_trucks,
+                                        'used_trucks': 0,
+                                        'remaining_trucks': contract_trucks,
+                                        'need_trucks': planned_trucks,
+                                        'skip_reason': f'报单日期{report_date}晚于合同截止日期{end_date}'
+                                    })
+                                    continue  # 跳过该合同，继续下一个
+                            except (ValueError, TypeError):
+                                pass
+
                         # 统计该合同已匹配的报单车数总和
                         cur.execute("""
                             SELECT COALESCE(SUM(planned_trucks), 0) as used_trucks
@@ -312,7 +379,43 @@ class DeliveryService:
                         remaining = contract_trucks - used_trucks
 
                         # 检查车数是否足够
-                        if planned_trucks <= remaining:
+                        # 新逻辑：匹配后必须至少剩余1车，即 planned_trucks < remaining
+                        if planned_trucks < remaining:  # 严格小于，确保匹配后至少剩1车
+                            # 找到够车数的合同！判断是否最后一单
+                            is_last = (used_trucks + planned_trucks) >= contract_trucks
+
+                            logger.debug(f"选择合同用于报单: contract_no={contract_no}, contract_trucks={contract_trucks}, used_trucks={used_trucks}, remaining_before={remaining}, this_delivery_trucks={planned_trucks}")
+
+                            return {
+                                'matched': False,
+                                'contract_no': contract_no,
+                                'unit_price': float(unit_price) if unit_price else None,
+                                'is_last_delivery': is_last,
+                                'contract_total_trucks': contract_trucks,
+                                'contract_used_trucks': used_trucks,
+                                'contract_remaining_trucks': remaining - planned_trucks,
+                                'this_delivery_trucks': planned_trucks,
+                                'matched_index': idx + 1,  # 第几个匹配的合同
+                                'total_matched': len(matching_contracts),
+                                'skipped_contracts': skipped_contracts,
+                                'reason': None
+                            }
+                        else:
+                            # 车数不够，或刚好用完无法保证剩余1车，记录并继续下一个
+                            skip_reason = f'车数不足（需{planned_trucks}车，仅余{remaining}车）'
+                            if planned_trucks == remaining:
+                                skip_reason = f'车数刚好用完无法保证剩余1车（需{planned_trucks}车，仅余{remaining}车，匹配后剩余0车）'
+                            
+                            skipped_contracts.append({
+                                'index': idx + 1,
+                                'contract_no': contract_no,
+                                'unit_price': float(unit_price) if unit_price else None,
+                                'total_trucks': contract_trucks,
+                                'used_trucks': used_trucks,
+                                'remaining_trucks': remaining,
+                                'need_trucks': planned_trucks,
+                                'skip_reason': skip_reason
+                            })
                             # 找到够车数的合同！判断是否最后一单
                             is_last = (used_trucks + planned_trucks) >= contract_trucks
 
@@ -332,18 +435,7 @@ class DeliveryService:
                                 'skipped_contracts': skipped_contracts,
                                 'reason': None
                             }
-                        else:
-                            # 车数不够，记录并继续下一个
-                            skipped_contracts.append({
-                                'index': idx + 1,
-                                'contract_no': contract_no,
-                                'unit_price': float(unit_price) if unit_price else None,
-                                'total_trucks': contract_trucks,
-                                'used_trucks': used_trucks,
-                                'remaining_trucks': remaining,
-                                'need_trucks': planned_trucks,
-                                'skip_reason': f'车数不足（需{planned_trucks}车，仅余{remaining}车）'
-                            })
+                        
 
                     # Step 3: 所有匹配的合同车数都不够
                     # 构建详细的错误信息
@@ -673,6 +765,11 @@ class DeliveryService:
                 return {"success": False, "error": "货物品种不能为空"}
             data['products'] = products
 
+            # ---- 新增：将主品种转换为冶炼厂品种用于合同匹配 ----
+            owner_main_product = products[0] if products else data.get('product_name')
+            mill_main_product = self._convert_to_mill_product(owner_main_product)
+            # ----------------------------------------------
+
             # 计算本单总车数
             quantity = Decimal(str(data.get('quantity', 0)))
             planned_trucks = self._calculate_trucks(quantity)
@@ -684,7 +781,7 @@ class DeliveryService:
             
             match_result = self._match_contract_with_truck_check(
                 factory_name=target_factory,
-                product_name=products[0],
+                product_name=mill_main_product,
                 planned_trucks=planned_trucks,
                 report_date=data.get('report_date'),
                 exact_contract_no=exact_contract_no  # 传入精确匹配
@@ -719,7 +816,11 @@ class DeliveryService:
                         'delivery_order_image', 'upload_status', 'source_type', 'shipper',
                         'payee', 'service_fee', 'contract_no', 'contract_unit_price',
                         'total_amount', 'status', 'uploader_id', 'uploader_name',
-                        'reporter_id', 'reporter_name', 'voucher_images'  # 新增字段
+                        'reporter_id', 'reporter_name', 'voucher_images',
+                        # ===== 需求4：新增字段 =====
+                        'position',
+                        'submitter_name',
+                        # ===== 需求4结束 =====
                     ]
                     values = [
                         data.get('report_date'),
@@ -748,8 +849,9 @@ class DeliveryService:
                         uploader_name,
                         reporter_id,
                         reporter_name,
-                        # 将列表转为 JSON 字符串
-                        json.dumps(data.get('voucher_images')) if data.get('voucher_images') else None
+                        json.dumps(data.get('voucher_images')) if data.get('voucher_images') else None,
+                        data.get('position'),
+                        data.get('submitter_name'),
                     ]
 
                     if has_products_column:
@@ -955,7 +1057,7 @@ class DeliveryService:
                     for key in ['report_date', 'warehouse', 'target_factory_id', 'target_factory_name',
                                 'product_name', 'quantity', 'vehicle_no', 'driver_name', 'driver_phone',
                                 'driver_id_card', 'shipper', 'payee', 'service_fee', 'contract_no',
-                                'contract_unit_price', 'total_amount', 'status', 'reporter_id', 'reporter_name']:
+                                'contract_unit_price', 'total_amount', 'status', 'reporter_id', 'reporter_name','position', 'submitter_name']:
                         if key in data:
                             update_data[key] = data[key]
 
@@ -1329,7 +1431,10 @@ class DeliveryService:
                         data.get('upload_status'),
                         data.get('delivery_order_image')
                     )
-
+                    if 'position' not in data:
+                        data['position'] = None
+                    if 'submitter_name' not in data:
+                        data['submitter_name'] = None
                     # ========== 新增部分：处理 PDF 字段 ==========
                     # 添加一个布尔标志，方便前端判断
                     data['has_pdf'] = bool(data.get('delivery_order_pdf'))
@@ -1908,13 +2013,18 @@ class DeliveryService:
         
         # 2. 验证数据
         validation = self.validate_extracted(extracted.copy())
+
+        # ---- 新增：转换品种为冶炼厂品种用于合同匹配 ----
+        original_product = extracted.get('product_name')
+        mill_product = self._convert_to_mill_product(original_product) if original_product else None
+        # ----------------------------------------------
         
         # 3. 匹配合同
         # Prefer explicit target factory name if extracted (更可靠的目标工厂字段)
         factory_for_match = extracted.get('target_factory_name') or extracted.get('factory_name')
         contract_match = self.match_contract_by_factory_and_product(
             factory_name=factory_for_match,
-            product_name=extracted.get('product_name'),
+            product_name=mill_product,
             report_date=report_date
         )
 

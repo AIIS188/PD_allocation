@@ -173,6 +173,10 @@ TABLE_STATEMENTS = [
 		shipper VARCHAR(64) COMMENT '发货人（默认操作人）',
 		reporter_id BIGINT COMMENT '报单人ID（关联pd_users.id）',
 		reporter_name VARCHAR(64) COMMENT '报单人姓名',
+		-- ===== 需求4：新增岗位和提交人姓名字段 =====
+		position VARCHAR(50) COMMENT '岗位',
+		submitter_name VARCHAR(100) COMMENT '提交人姓名',
+		-- ===== 需求4结束 =====
 		payee VARCHAR(64) COMMENT '收款人',
 		service_fee DECIMAL(14, 2) DEFAULT 0 COMMENT '服务费',
 		contract_no VARCHAR(64) COMMENT '关联合同编号',
@@ -188,7 +192,7 @@ TABLE_STATEMENTS = [
 		updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
 		INDEX idx_report_date (report_date),
 		INDEX idx_contract_no (contract_no),
-		INDEX idx_contract_id (contract_id),  -- 新增索引
+		INDEX idx_contract_id (contract_id),
 		INDEX idx_target_factory (target_factory_id),
 		INDEX idx_vehicle_no (vehicle_no),
 		INDEX idx_status (status),
