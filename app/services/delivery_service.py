@@ -323,14 +323,7 @@ class DeliveryService:
                         from datetime import datetime
                         contract_date = contract.get("contract_date")
                         end_date = contract.get("end_date")
-                        
-                        # 报单日期有效性检查
-                        try:
-                            report_date_obj = datetime.strptime(report_date, "%Y-%m-%d").date()
-                        except (ValueError, TypeError):
-                            report_date_obj = datetime.today().date()
-                        
-                        # 检查是否在合同开始日期之后
+                                   # 检查是否在合同开始日期之后
                         if contract_date:
                             try:
                                 contract_date_obj = datetime.strptime(str(contract_date), "%Y-%m-%d").date()
@@ -375,7 +368,7 @@ class DeliveryService:
                             WHERE contract_no = %s
                             AND status IN ('待确认', '已确认', '已完成')
                         """, (contract_no,))
-
+                        
                         used_trucks = int(cur.fetchone()['used_trucks'] or 0)
                         remaining = contract_trucks - used_trucks
 
@@ -388,7 +381,7 @@ class DeliveryService:
                             logger.debug(f"选择合同用于报单: contract_no={contract_no}, contract_trucks={contract_trucks}, used_trucks={used_trucks}, remaining_before={remaining}, this_delivery_trucks={planned_trucks}")
 
                             return {
-                                'matched': False,
+                                'matched': True,
                                 'contract_no': contract_no,
                                 'unit_price': float(unit_price) if unit_price else None,
                                 'is_last_delivery': is_last,
@@ -417,21 +410,10 @@ class DeliveryService:
                                 'need_trucks': planned_trucks,
                                 'skip_reason': skip_reason
                             })
-                            # 找到够车数的合同！判断是否最后一单
-                            is_last = (used_trucks + planned_trucks) >= contract_trucks
+                            # 车数不足，继续检查下一个合同
+                            continue
 
-                            logger.debug(f"选择合同用于报单: contract_no={contract_no}, contract_trucks={contract_trucks}, used_trucks={used_trucks}, remaining_before={remaining}, this_delivery_trucks={planned_trucks}")
-
-                            return {
-                                'matched': True,
-                                'contract_no': contract_no,
-                                'unit_price': float(unit_price) if unit_price else None,
-                                'is_last_delivery': is_last,
-                                'contract_total_trucks': contract_trucks,
-                                'contract_used_trucks': used_trucks,
-                                'contract_remaining_trucks': remaining - planned_trucks,
-                                'this_delivery_trucks': planned_trucks,
-                                'matched_index': idx + 1,  # 第几个匹配的合同
+                    # Step 3: 所有匹配的合同车数都不够                 'matched_index': idx + 1,  # 第几个匹配的合同
                                 'total_matched': len(matching_contracts),
                                 'skipped_contracts': skipped_contracts,
                                 'reason': None
