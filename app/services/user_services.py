@@ -480,7 +480,7 @@ class PermissionService:
     _fields_cache = None          # List[str]
     _labels_cache = None          # Dict[str, str]
 
-    VALID_ROLES = ['管理员', '大区经理', '自营库管理', '财务', '会计']
+    VALID_ROLES = ['管理员', '大区经理', '自营库管理', '财务', '会计', '审核主管']
 
     @classmethod
     def _load_definitions(cls):

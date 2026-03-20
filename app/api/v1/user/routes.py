@@ -39,7 +39,7 @@ class CreateUserReq(BaseModel):
     name: str = Field(..., description="用户姓名")
     account: str = Field(..., description="登录账号")
     password: str = Field(..., min_length=6, description="初始密码")
-    role: str = Field(..., description="角色：管理员/大区经理/自营库管理/财务/会计")
+    role: str = Field(..., description="角色：管理员/大区经理/自营库管理/财务/会计/审核主管")
     phone: Optional[str] = Field(None, description="手机号")
     email: Optional[str] = Field(None, description="邮箱")
 
@@ -83,7 +83,7 @@ class UserResp(BaseModel):
 # ========== 新增：权限管理模型 ==========
 
 class PermissionUpdateReq(BaseModel):
-    role: Optional[str] = Field(None, description="角色：管理员/大区经理/自营库管理/财务/会计")
+    role: Optional[str] = Field(None, description="角色：管理员/大区经理/自营库管理/财务/会计/审核主管")
     permissions: Optional[Dict[str, bool]] = Field(None,
                                                    description="权限字典，如 {'perm_schedule': true, 'perm_payout': false}")
 
@@ -499,7 +499,8 @@ def get_roles():
             {"code": "大区经理", "name": "大区经理", "description": "可管理下级用户和数据"},
             {"code": "自营库管理", "name": "自营库管理", "description": "管理库存和物流"},
             {"code": "财务", "name": "财务", "description": "处理财务相关操作"},
-            {"code": "会计", "name": "会计", "description": "查看财务数据"}
+            {"code": "会计", "name": "会计", "description": "查看财务数据"},
+            {"code": "审核主管", "name": "审核主管", "description": "负责报单审核与发运相关核查"}
         ]
     }
 
