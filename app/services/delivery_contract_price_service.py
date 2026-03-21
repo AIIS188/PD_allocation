@@ -109,6 +109,39 @@ class DeliveryContractPriceService:
             logger.error("list delivery contract prices: %s", e)
             return {"success": False, "error": str(e)}
 
+    def fetch_prices_by_delivery_ids(
+        self, delivery_ids: List[int]
+    ) -> Dict[int, List[Dict[str, Any]]]:
+        """批量查询多个报单下的合同品类单价，供列表接口拼接。"""
+        _ensure_table()
+        if not delivery_ids:
+            return {}
+        try:
+            uniq = list({int(i) for i in delivery_ids})
+            placeholders = ",".join(["%s"] * len(uniq))
+            with get_conn() as conn:
+                with conn.cursor(DictCursor) as cur:
+                    cur.execute(
+                        f"""
+                        SELECT id, delivery_id, contract_id, product_name, unit_price, sort_order,
+                               created_at, updated_at
+                        FROM pd_delivery_contract_product_prices
+                        WHERE delivery_id IN ({placeholders})
+                        ORDER BY delivery_id, sort_order, id
+                        """,
+                        tuple(uniq),
+                    )
+                    rows = cur.fetchall() or []
+            out: Dict[int, List[Dict[str, Any]]] = {}
+            for r in rows:
+                d = _serialize_row(dict(r))
+                did = int(d["delivery_id"])
+                out.setdefault(did, []).append(d)
+            return out
+        except Exception as e:
+            logger.warning("fetch_prices_by_delivery_ids: %s", e)
+            return {}
+
     def sync_from_contract(self, delivery_id: int) -> Dict[str, Any]:
         _ensure_table()
         try:

@@ -132,7 +132,7 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8007
 ### 报货计划（`/api/v1/delivery-plans`）
 
 - `POST /api/v1/deliveries`：新增报货订单/销售台账。
-- `GET /api/v1/deliveries`：列表。
+- `GET /api/v1/deliveries`：列表；每条含 `contract_product_prices`（与 `GET .../contract-product-prices` 相同结构，无数据时为 `[]`）。
 - `GET /api/v1/deliveries/{delivery_id}`：单条详情。
 - `GET /api/v1/deliveries/{delivery_id}/image`：预览联单图片。
 - `PUT /api/v1/deliveries/{delivery_id}`：更新。

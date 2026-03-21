@@ -12,6 +12,7 @@ from decimal import Decimal, ROUND_FLOOR
 from typing import Dict, List, Optional, Any
 from datetime import datetime
 from app.core.paths import UPLOADS_DIR
+from app.services.delivery_contract_price_service import get_delivery_contract_price_service
 from core.database import get_conn
 
 logger = logging.getLogger(__name__)
@@ -24,6 +25,21 @@ UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 # 标准车容量（吨）
 STANDARD_TRUCK_CAPACITY = Decimal('35')
+
+
+def _attach_contract_product_prices_to_delivery_rows(data: List[dict]) -> None:
+    """为列表行附加 contract_product_prices（来自 pd_delivery_contract_product_prices）。"""
+    if not data:
+        return
+    try:
+        ids = [int(x["id"]) for x in data]
+        pmap = get_delivery_contract_price_service().fetch_prices_by_delivery_ids(ids)
+        for item in data:
+            item["contract_product_prices"] = pmap.get(int(item["id"]), [])
+    except Exception as e:
+        logger.warning("attach contract_product_prices: %s", e)
+        for item in data:
+            item["contract_product_prices"] = []
 
 
 class DeliveryService:
@@ -1730,6 +1746,8 @@ class DeliveryService:
 
                         data.append(item)
 
+                    _attach_contract_product_prices_to_delivery_rows(data)
+
                     return {
                         "success": True,
                         "data": data,
@@ -2344,6 +2362,8 @@ class DeliveryService:
                         )
 
                         data.append(item)
+
+                    _attach_contract_product_prices_to_delivery_rows(data)
 
                     return {
                         "success": True,
