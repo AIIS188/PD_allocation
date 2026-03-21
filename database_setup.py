@@ -203,6 +203,22 @@ TABLE_STATEMENTS = [
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='销售台账/报货订单';
 	""",
 	"""
+	CREATE TABLE IF NOT EXISTS pd_delivery_contract_product_prices (
+		id BIGINT AUTO_INCREMENT PRIMARY KEY COMMENT '主键ID',
+		delivery_id BIGINT NOT NULL COMMENT '报单ID（pd_deliveries.id）',
+		contract_id BIGINT NOT NULL COMMENT '合同ID（同步自报单关联合同）',
+		product_name VARCHAR(64) NOT NULL COMMENT '品类名称',
+		unit_price DECIMAL(12, 2) NOT NULL COMMENT '单价（元）',
+		sort_order INT NOT NULL DEFAULT 0 COMMENT '排序',
+		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+		updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+		UNIQUE KEY uk_delivery_product (delivery_id, product_name),
+		INDEX idx_delivery_id (delivery_id),
+		INDEX idx_contract_id (contract_id),
+		CONSTRAINT fk_dcpp_delivery FOREIGN KEY (delivery_id) REFERENCES pd_deliveries(id) ON DELETE CASCADE
+	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='报单关联合同品类单价表';
+	""",
+	"""
 	CREATE TABLE IF NOT EXISTS pd_delivery_plans (
 		id BIGINT AUTO_INCREMENT PRIMARY KEY COMMENT '主键ID',
 		plan_no VARCHAR(64) NOT NULL COMMENT '计划编号',
