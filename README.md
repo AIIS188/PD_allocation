@@ -110,8 +110,8 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8007
 
 ### 合同管理（`/api/v1/contracts`）
 
-- `POST /api/v1/contracts/ocr`：上传合同图片，OCR 识别；可选自动保存与图片落盘。
-- `POST /api/v1/contracts/manual`：手动录入合同（含品种与单价明细）。
+- `POST /api/v1/contracts/ocr`：上传合同图片，OCR 识别；可选自动保存与图片落盘。**自动写入数据库时**须带查询参数 `delivery_plan_id`（报货计划主键 `pd_delivery_plans.id`）。
+- `POST /api/v1/contracts/manual`：手动录入合同（含品种与单价明细）；请求 JSON **必须**包含 `delivery_plan_id`（同上）。
 - `GET /api/v1/contracts`：分页列表，支持精确条件与模糊关键词。
 - `GET /api/v1/contracts/{contract_id}`：详情（含品种明细）。
 - `GET /api/v1/contracts/{contract_id}/image`：预览合同图片。

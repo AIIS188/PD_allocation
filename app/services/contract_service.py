@@ -60,6 +60,73 @@ def get_conn():
         connection.close()
 
 
+_CONTRACT_DELIVERY_PLAN_ID_ENSURED = False
+
+
+def _ensure_contract_delivery_plan_id_column() -> None:
+    """旧库补全合同关联报货计划字段、索引与外键（仅执行一次）。"""
+    global _CONTRACT_DELIVERY_PLAN_ID_ENSURED
+    if _CONTRACT_DELIVERY_PLAN_ID_ENSURED:
+        return
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+                    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'pd_contracts'
+                    """
+                )
+                existing_cols = {row[0] for row in (cur.fetchall() or [])}
+                if "delivery_plan_id" not in existing_cols:
+                    cur.execute(
+                        """
+                        ALTER TABLE pd_contracts
+                        ADD COLUMN delivery_plan_id BIGINT DEFAULT NULL
+                        COMMENT '报货计划ID（关联pd_delivery_plans.id）'
+                        """
+                    )
+                cur.execute(
+                    """
+                    SELECT 1 FROM INFORMATION_SCHEMA.STATISTICS
+                    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'pd_contracts'
+                      AND INDEX_NAME = 'idx_contract_delivery_plan_id'
+                    LIMIT 1
+                    """
+                )
+                if not cur.fetchone():
+                    try:
+                        cur.execute(
+                            "CREATE INDEX idx_contract_delivery_plan_id ON pd_contracts(delivery_plan_id)"
+                        )
+                    except Exception as ie:
+                        logger.warning("create idx_contract_delivery_plan_id skipped: %s", ie)
+                cur.execute(
+                    """
+                    SELECT CONSTRAINT_NAME FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS
+                    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'pd_contracts'
+                      AND CONSTRAINT_TYPE = 'FOREIGN KEY'
+                      AND CONSTRAINT_NAME = 'fk_pd_contracts_delivery_plan'
+                    """
+                )
+                if not cur.fetchone():
+                    try:
+                        cur.execute(
+                            """
+                            ALTER TABLE pd_contracts
+                            ADD CONSTRAINT fk_pd_contracts_delivery_plan
+                            FOREIGN KEY (delivery_plan_id) REFERENCES pd_delivery_plans(id)
+                            ON DELETE RESTRICT
+                            """
+                        )
+                    except Exception as fe:
+                        logger.warning("add fk_pd_contracts_delivery_plan skipped/failed: %s", fe)
+            conn.commit()
+        _CONTRACT_DELIVERY_PLAN_ID_ENSURED = True
+    except Exception as e:
+        logger.warning("ensure_contract_delivery_plan_id_column: %s", e)
+
+
 # ============ 核心服务 ============
 
 class ContractService:
@@ -410,6 +477,7 @@ class ContractService:
             "final_payment_ratio",
             "status",
             "remarks",
+            "delivery_plan_id",
         ]
         conditions = []
         params = []
@@ -569,6 +637,28 @@ class ContractService:
     def create_contract(self, data: Dict, products: List[Dict]) -> Dict[str, Any]:
         """创建合同（包含品种明细）"""
         try:
+            _ensure_contract_delivery_plan_id_column()
+            plan_id = data.get("delivery_plan_id")
+            if plan_id is None:
+                return {"success": False, "error": "必须指定报货计划 delivery_plan_id"}
+            try:
+                plan_id = int(plan_id)
+            except (TypeError, ValueError):
+                return {"success": False, "error": "delivery_plan_id 无效"}
+            data["delivery_plan_id"] = plan_id
+
+            with get_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT id FROM pd_delivery_plans WHERE id = %s",
+                        (plan_id,),
+                    )
+                    if not cur.fetchone():
+                        return {
+                            "success": False,
+                            "error": f"报货计划 ID {plan_id} 不存在",
+                        }
+
             # 检查合同编号是否已存在（包括已删除的）
             with get_conn() as conn:
                 with conn.cursor() as cur:
@@ -614,8 +704,8 @@ class ContractService:
                         INSERT INTO pd_contracts 
                         (contract_no, contract_date, end_date, smelter_company, 
                          total_quantity, truck_count, prepayment_ratio, arrival_payment_ratio, final_payment_ratio,
-                         contract_image_path, status, remarks)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                         contract_image_path, status, remarks, delivery_plan_id)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """, (
                         data.get("contract_no"),
                         data.get("contract_date"),
@@ -629,6 +719,7 @@ class ContractService:
                         data.get("contract_image_path"),
                         data.get("status", "生效中"),
                         data.get("remarks"),
+                        data.get("delivery_plan_id"),
                     ))
 
                     contract_id = cur.lastrowid
@@ -658,6 +749,24 @@ class ContractService:
     def update_contract(self, contract_id: int, data: Dict, products: List[Dict] = None) -> Dict[str, Any]:
         """更新合同（含图片重命名）"""
         try:
+            _ensure_contract_delivery_plan_id_column()
+            if "delivery_plan_id" in data and data["delivery_plan_id"] is not None:
+                try:
+                    pid = int(data["delivery_plan_id"])
+                except (TypeError, ValueError):
+                    return {"success": False, "error": "delivery_plan_id 无效"}
+                data["delivery_plan_id"] = pid
+                with get_conn() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "SELECT id FROM pd_delivery_plans WHERE id = %s",
+                            (pid,),
+                        )
+                        if not cur.fetchone():
+                            return {
+                                "success": False,
+                                "error": f"报货计划 ID {pid} 不存在",
+                            }
             if "total_quantity" in data:
                 data["truck_count"] = self._calculate_truck_count(data.get("total_quantity"))
             with get_conn() as conn:
@@ -716,7 +825,8 @@ class ContractService:
                     params = []
                     fields = ["contract_no", "contract_date", "end_date", "smelter_company",
                               "total_quantity", "truck_count", "prepayment_ratio", "arrival_payment_ratio",
-                              "final_payment_ratio", "status", "remarks", "contract_image_path"]
+                              "final_payment_ratio", "status", "remarks", "contract_image_path",
+                              "delivery_plan_id"]
 
                     for field in fields:
                         if field in data:

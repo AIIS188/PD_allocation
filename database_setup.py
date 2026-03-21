@@ -372,9 +372,12 @@ TABLE_STATEMENTS = [
 		contract_image_path VARCHAR(255) COMMENT '合同图片路径',
 		status VARCHAR(32) DEFAULT '生效中' COMMENT '状态：生效中/已到期/已终止',
 		remarks TEXT COMMENT '备注',
+		delivery_plan_id BIGINT DEFAULT NULL COMMENT '报货计划ID（关联pd_delivery_plans.id）',
 		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
 		updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
-		INDEX idx_seq_no (seq_no)
+		INDEX idx_seq_no (seq_no),
+		INDEX idx_contract_delivery_plan_id (delivery_plan_id),
+		CONSTRAINT fk_pd_contracts_delivery_plan FOREIGN KEY (delivery_plan_id) REFERENCES pd_delivery_plans(id) ON DELETE RESTRICT
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='合同表';
 	""",
 	"""

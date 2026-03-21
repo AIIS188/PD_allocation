@@ -13,7 +13,7 @@ from typing import List, Optional
 
 from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, Query, Body, Form
 from fastapi.responses import StreamingResponse, FileResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from datetime import date
 
 from app.core.paths import UPLOADS_DIR
@@ -63,6 +63,7 @@ class ContractOCRResponse(BaseModel):
 
 class ContractCreateRequest(BaseModel):
     contract_no: str
+    delivery_plan_id: int = Field(..., description="报货计划主键 id（pd_delivery_plans.id）")
     contract_date: Optional[str] = None
     end_date: Optional[str] = None
     smelter_company: Optional[str] = None
@@ -76,6 +77,9 @@ class ContractCreateRequest(BaseModel):
 
 class ContractUpdateRequest(BaseModel):
     contract_no: Optional[str] = None
+    delivery_plan_id: Optional[int] = Field(
+        None, description="报货计划主键 id；传入 null 可解除绑定"
+    )
     contract_date: Optional[str] = None
     end_date: Optional[str] = None
     smelter_company: Optional[str] = None
@@ -91,6 +95,7 @@ class ContractOut(BaseModel):
     id: int
     seq_no: Optional[int] = None
     contract_no: str
+    delivery_plan_id: Optional[int] = None
     contract_date: Optional[date] = None
     end_date: Optional[date] = None
     smelter_company: Optional[str] = None
@@ -113,7 +118,11 @@ async def ocr_recognize(
     file: UploadFile = File(..., description="合同图片"),
     auto_save: bool = Query(True, description="是否自动保存（默认true，OCR可能不完整）"),
     save_image: bool = Query(False, description="是否保存图片"),
-    service: ContractService = Depends(get_contract_service)
+    delivery_plan_id: Optional[int] = Query(
+        None,
+        description="自动写入数据库时必须传入：报货计划 id（pd_delivery_plans.id）",
+    ),
+    service: ContractService = Depends(get_contract_service),
 ):
     """OCR识别合同 - 支持不完整识别，用户后续补充"""
     allowed_types = ["image/jpeg", "image/jpg", "image/png", "image/bmp"]
@@ -161,9 +170,15 @@ async def ocr_recognize(
                 data["saved_to_db"] = False
                 data["db_message"] = f"合同 {contract_no} 已存在"
                 data["contract_id"] = existing["id"]
+            elif delivery_plan_id is None:
+                data["saved_to_db"] = False
+                data["db_message"] = (
+                    "自动保存已跳过：请在请求中传入查询参数 delivery_plan_id（报货计划 id）"
+                )
             else:
                 save_data = {
                     "contract_no": contract_no,
+                    "delivery_plan_id": delivery_plan_id,
                     "contract_date": data.get("contract_date"),
                     "end_date": data.get("end_date"),
                     "smelter_company": data.get("smelter_company"),
@@ -229,6 +244,7 @@ async def create_manual(
     contract_data格式示例：
     {
         "contract_no": "HT-2024-001",
+        "delivery_plan_id": 1,
         "contract_date": "2024-01-15",
         "end_date": "2024-01-20",
         "smelter_company": "河南金利金铅集团有限公司",
@@ -279,6 +295,7 @@ async def create_manual(
     try:
         data = {
             "contract_no": request.contract_no,
+            "delivery_plan_id": request.delivery_plan_id,
             "contract_date": request.contract_date,
             "end_date": request.end_date,
             "smelter_company": request.smelter_company,
@@ -371,6 +388,7 @@ async def update_contract(
     contract_data格式示例（可选，如果不传则不更新字段）：
     {
         "contract_no": "HT-2024-001",
+        "delivery_plan_id": 1,
         "contract_date": "2024-01-15",
         "end_date": "2024-01-20",
         "smelter_company": "河南金利金铅集团有限公司",
@@ -453,6 +471,9 @@ async def update_contract(
                 data["status"] = request.status
             if request.remarks is not None:
                 data["remarks"] = request.remarks
+            patch = request.model_dump(exclude_unset=True)
+            if "delivery_plan_id" in patch:
+                data["delivery_plan_id"] = patch["delivery_plan_id"]
 
         # 如果有新图片，添加到更新数据
         if new_image_path:
