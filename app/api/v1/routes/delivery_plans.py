@@ -16,7 +16,7 @@ class DeliveryPlanCreateRequest(BaseModel):
     plan_start_date: str = Field(..., description="计划开始日期 YYYY-MM-DD")
     planned_trucks: int = Field(0, ge=0, description="计划车数")
     planned_tonnage: float = Field(0, ge=0, description="计划吨数")
-    plan_status: str = Field("草稿", description="计划状态", max_length=32)
+    plan_status: str = Field("生效中", description="计划状态", max_length=32)
     confirmed_trucks: int = Field(0, ge=0, description="已定车数")
     unconfirmed_trucks: int = Field(0, ge=0, description="未定车数")
 

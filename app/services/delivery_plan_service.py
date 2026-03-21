@@ -39,7 +39,7 @@ class DeliveryPlanService:
                             data["plan_start_date"],
                             int(data.get("planned_trucks", 0)),
                             float(data.get("planned_tonnage", 0)),
-                            data.get("plan_status") or "草稿",
+                            data.get("plan_status") or "生效中",
                             int(data.get("confirmed_trucks", 0)),
                             int(data.get("unconfirmed_trucks", 0)),
                         ),

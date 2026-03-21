@@ -208,7 +208,7 @@ TABLE_STATEMENTS = [
 		plan_start_date DATE NOT NULL COMMENT '计划开始日期',
 		planned_trucks INT NOT NULL DEFAULT 0 COMMENT '计划车数',
 		planned_tonnage DECIMAL(12, 3) NOT NULL DEFAULT 0.000 COMMENT '计划吨数',
-		plan_status VARCHAR(32) DEFAULT '草稿' COMMENT '计划状态',
+		plan_status VARCHAR(32) DEFAULT '生效中' COMMENT '计划状态',
 		confirmed_trucks INT NOT NULL DEFAULT 0 COMMENT '已定车数',
 		unconfirmed_trucks INT NOT NULL DEFAULT 0 COMMENT '未定车数',
 		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
