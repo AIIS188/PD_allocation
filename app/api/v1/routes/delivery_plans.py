@@ -1,5 +1,5 @@
 """
-报货计划：查询、修改
+报货计划：录入、查询、修改
 """
 from typing import Optional
 
@@ -11,6 +11,16 @@ from app.services.delivery_plan_service import DeliveryPlanService, get_delivery
 router = APIRouter(prefix="/delivery-plans", tags=["报货计划"])
 
 
+class DeliveryPlanCreateRequest(BaseModel):
+    plan_no: str = Field(..., description="计划编号", max_length=64)
+    plan_start_date: str = Field(..., description="计划开始日期 YYYY-MM-DD")
+    planned_trucks: int = Field(0, ge=0, description="计划车数")
+    planned_tonnage: float = Field(0, ge=0, description="计划吨数")
+    plan_status: str = Field("草稿", description="计划状态", max_length=32)
+    confirmed_trucks: int = Field(0, ge=0, description="已定车数")
+    unconfirmed_trucks: int = Field(0, ge=0, description="未定车数")
+
+
 class DeliveryPlanUpdateRequest(BaseModel):
     plan_no: Optional[str] = Field(None, description="计划编号", max_length=64)
     plan_start_date: Optional[str] = Field(None, description="计划开始日期 YYYY-MM-DD")
@@ -19,6 +29,20 @@ class DeliveryPlanUpdateRequest(BaseModel):
     plan_status: Optional[str] = Field(None, description="计划状态", max_length=32)
     confirmed_trucks: Optional[int] = Field(None, ge=0, description="已定车数")
     unconfirmed_trucks: Optional[int] = Field(None, ge=0, description="未定车数")
+
+
+@router.post("/", summary="录入报货计划", response_model=dict)
+async def create_delivery_plan(
+    request: DeliveryPlanCreateRequest,
+    service: DeliveryPlanService = Depends(get_delivery_plan_service),
+):
+    result = service.create_plan(request.model_dump())
+    if result.get("success"):
+        return result
+    err = result.get("error", "录入失败")
+    if "计划编号已存在" in str(err):
+        raise HTTPException(status_code=400, detail=err)
+    raise HTTPException(status_code=400, detail=err)
 
 
 @router.get("/", summary="查询报货计划列表", response_model=dict)

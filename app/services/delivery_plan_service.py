@@ -1,5 +1,5 @@
 """
-报货计划：查询与更新
+报货计划：录入、查询与更新
 """
 import logging
 from datetime import date, datetime
@@ -23,6 +23,40 @@ def _serialize_row(row: Dict[str, Any]) -> Dict[str, Any]:
 
 
 class DeliveryPlanService:
+    def create_plan(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        try:
+            with get_conn() as conn:
+                with conn.cursor(DictCursor) as cur:
+                    cur.execute(
+                        """
+                        INSERT INTO pd_delivery_plans (
+                            plan_no, plan_start_date, planned_trucks, planned_tonnage,
+                            plan_status, confirmed_trucks, unconfirmed_trucks
+                        ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+                        """,
+                        (
+                            data["plan_no"],
+                            data["plan_start_date"],
+                            int(data.get("planned_trucks", 0)),
+                            float(data.get("planned_tonnage", 0)),
+                            data.get("plan_status") or "草稿",
+                            int(data.get("confirmed_trucks", 0)),
+                            int(data.get("unconfirmed_trucks", 0)),
+                        ),
+                    )
+                    conn.commit()
+                    return {
+                        "success": True,
+                        "message": "报货计划录入成功",
+                        "data": {"id": cur.lastrowid},
+                    }
+        except Exception as e:
+            logger.error("create delivery plan failed: %s", e)
+            err = str(e)
+            if "Duplicate entry" in err and "uk_plan_no" in err:
+                return {"success": False, "error": "计划编号已存在"}
+            return {"success": False, "error": err}
+
     def list_plans(
         self,
         plan_no: Optional[str] = None,
