@@ -136,6 +136,10 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8007
 - `PUT /api/v1/deliveries/{delivery_id}`：更新。
 - `DELETE /api/v1/deliveries/{delivery_id}`：删除。
 - `POST /api/v1/deliveries/{delivery_id}/upload-order`：上传报货单附件。
+- **报单合同品类单价**（表 `pd_delivery_contract_product_prices`，按报单 `delivery_id` 存关联合同的品类与单价，可与合同品种表独立改价）：
+  - `GET /api/v1/deliveries/{delivery_id}/contract-product-prices`：列表。
+  - `POST /api/v1/deliveries/{delivery_id}/contract-product-prices/sync-from-contract`：按报单当前关联合同，从 `pd_contract_products` **全量覆盖**写入本表（需登录）。
+  - `PATCH /api/v1/deliveries/{delivery_id}/contract-product-prices`：批量改单价（需登录）； body：`{"items":[{"id":1,"unit_price":8500}]}` 或 `{"items":[{"product_name":"电动车","unit_price":8500}]}`。
 
 ### 订货计划（`/api/v1/order-plans`）
 
