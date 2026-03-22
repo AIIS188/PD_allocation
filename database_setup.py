@@ -183,7 +183,7 @@ TABLE_STATEMENTS = [
 		contract_id BIGINT COMMENT '关联合同ID（外键，用于数据完整性）',
 		contract_unit_price DECIMAL(12, 2) COMMENT '合同单价',
 		total_amount DECIMAL(14, 2) COMMENT '总价（单价×数量）',
-		status VARCHAR(32) DEFAULT '待确认' COMMENT '状态：待确认/已确认/已完成/已取消',
+		status VARCHAR(32) DEFAULT '审核未通过' COMMENT '审核状态：审核通过/审核未通过',
 		uploader_id BIGINT COMMENT '上传人ID（关联pd_users.id）',
 		uploader_name VARCHAR(64) COMMENT '上传人姓名（冗余存储）',
 		planned_trucks INT DEFAULT 1 COMMENT '预计车数（quantity/35向上取整）',
@@ -690,6 +690,29 @@ def ensure_weighbill_audit_columns():
 		connection.close()
 
 
+def migrate_delivery_status_to_audit():
+	"""迁移报单状态：待确认/已确认/已完成/已取消 -> 审核通过/审核未通过"""
+	config = get_mysql_config()
+	connection = pymysql.connect(**config)
+	try:
+		with connection.cursor() as cursor:
+			cursor.execute("""
+				UPDATE pd_deliveries
+				SET status = CASE
+					WHEN status IN ('已确认', '已完成') THEN '审核通过'
+					WHEN status IN ('待确认', '已取消') THEN '审核未通过'
+					ELSE status
+				END
+				WHERE status IN ('待确认', '已确认', '已完成', '已取消')
+			""")
+			affected = cursor.rowcount
+		connection.commit()
+		if affected > 0:
+			print(f"报单状态迁移完成，共更新 {affected} 条")
+	finally:
+		connection.close()
+
+
 def create_tables() -> None:
 	# 第1步：先创建数据库（如果不存在）
 	create_database_if_not_exists()
@@ -704,6 +727,7 @@ def create_tables() -> None:
 		print("所有数据表创建完成")
 		init_permission_definitions()
 		ensure_weighbill_audit_columns()
+		migrate_delivery_status_to_audit()
 	finally:
 		connection.close()
 

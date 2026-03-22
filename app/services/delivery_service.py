@@ -317,7 +317,7 @@ class DeliveryService:
                                 SELECT COALESCE(SUM(planned_trucks), 0) as used_trucks
                                 FROM pd_deliveries
                                 WHERE contract_no = %s AND contract_id = %s
-                                AND status IN ('待确认', '已确认', '已完成')
+                                AND status = '审核通过'
                             """, (contract_no, match["id"]))
                             
                             used_trucks = int(cur.fetchone()['used_trucks'] or 0)
@@ -437,7 +437,7 @@ class DeliveryService:
                             SELECT COALESCE(SUM(planned_trucks), 0) as used_trucks
                             FROM pd_deliveries
                             WHERE contract_no = %s
-                            AND status IN ('待确认', '已确认', '已完成')
+                            AND status = '审核通过'
                         """, (contract_no,))
                         
                         used_trucks = int(cur.fetchone()['used_trucks'] or 0)
@@ -863,9 +863,9 @@ class DeliveryService:
             planned_trucks = self._calculate_trucks(quantity)
             data['planned_trucks'] = planned_trucks
             if current_user and current_user.get("role") == "大区经理":
-                data['status'] = '待确认'
+                data['status'] = '审核未通过'
             else:
-                data['status'] = '已确认'
+                data['status'] = '审核通过'
             # 合同匹配
             target_factory = data.get('target_factory_name')
             exact_contract_no = data.get('contract_no')  # 获取用户指定的合同编号
@@ -937,7 +937,7 @@ class DeliveryService:
                         contract_id,
                         unit_price,
                         total_amount,
-                        data.get('status', '待确认'),
+                        data.get('status', '审核未通过'),
                         uploader_id,
                         uploader_name,
                         reporter_id,
@@ -1274,7 +1274,7 @@ class DeliveryService:
             return {"success": False, "error": "无权审核报单"}
 
         # 可选：限制允许修改的状态值
-        valid_status = ['已确认', '已完成', '已取消']
+        valid_status = ['审核通过', '审核未通过']
         if new_status not in valid_status:
             return {
                 "success": False,
@@ -2344,9 +2344,9 @@ class DeliveryService:
                     # 审核状态筛选
                     if audit_status:
                         if audit_status == '待审核':
-                            where_clauses.append("status = '待确认'")
+                            where_clauses.append("status = '审核未通过'")
                         elif audit_status == '已审核':
-                            where_clauses.append("status IN ('已确认', '已完成', '已取消')")
+                            where_clauses.append("status = '审核通过'")
 
                     if date_from:
                         where_clauses.append("report_date >= %s")
