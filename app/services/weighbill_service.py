@@ -1441,6 +1441,9 @@ class WeighbillService:
                         wb["is_manual_corrected_display"] = "是" if wb.get("is_manual_corrected") == 1 else "否"
                         wb["ocr_status_display"] = wb.get("ocr_status", "待上传磅单")
                         wb["has_delivery_order_display"] = "是" if wb.get("has_delivery_order") == "有" else "否"
+                        if self._has_weighbill_audit_columns():
+                            wb.setdefault("audit_status", "待审核")
+                            wb.setdefault("audit_remark", None)
                         payout_status = wb.get("payout_status")
                         if payout_status is None:
                             payout_status = wb.get("is_paid_out")
@@ -1506,7 +1509,7 @@ class WeighbillService:
                                 continue
 
                             for product in delivery.get('products', []):
-                                weighbills.append({
+                                placeholder = {
                                     "id": None,
                                     "delivery_id": delivery_id,
                                     "product_name": product,
@@ -1518,7 +1521,11 @@ class WeighbillService:
                                     "payable_amount_calculated": None,
                                     "receivable_amount_calculated": None,
                                     "operations": {"can_upload": True, "can_modify": False, "can_view": False}
-                                })
+                                }
+                                if self._has_weighbill_audit_columns():
+                                    placeholder["audit_status"] = "待审核"
+                                    placeholder["audit_remark"] = None
+                                weighbills.append(placeholder)
                         result_data.append({
                             "delivery_id": delivery_id,
                             "contract_no": delivery.get("contract_no"),

@@ -672,7 +672,6 @@ def ensure_weighbill_audit_columns():
 					ALTER TABLE pd_weighbills
 					ADD COLUMN audit_status VARCHAR(32) DEFAULT '待审核'
 					COMMENT '磅单审核状态：待审核/审核通过/审核未通过'
-					AFTER is_last_truck_for_contract
 				""")
 				try:
 					cursor.execute("ALTER TABLE pd_weighbills ADD INDEX idx_audit_status (audit_status)")
@@ -684,7 +683,6 @@ def ensure_weighbill_audit_columns():
 				cursor.execute("""
 					ALTER TABLE pd_weighbills
 					ADD COLUMN audit_remark TEXT DEFAULT NULL COMMENT '审核备注'
-					AFTER audit_status
 				""")
 				print("pd_weighbills 已添加 audit_remark 列")
 		connection.commit()
