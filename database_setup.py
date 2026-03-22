@@ -585,6 +585,39 @@ TABLE_STATEMENTS = [
 		INDEX idx_created_at (created_at)
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='回款文件上传日志';
 	""",
+	# ========== 异常审核模块 ==========
+	"""
+	CREATE TABLE IF NOT EXISTS pd_exception_types (
+		id BIGINT AUTO_INCREMENT PRIMARY KEY COMMENT '主键ID',
+		type_name VARCHAR(64) NOT NULL UNIQUE COMMENT '异常类型名称',
+		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+		updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+		INDEX idx_type_name (type_name)
+	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='异常类型表';
+	""",
+	"""
+	CREATE TABLE IF NOT EXISTS pd_exception_reports (
+		id BIGINT AUTO_INCREMENT PRIMARY KEY COMMENT '主键ID',
+		status VARCHAR(32) NOT NULL DEFAULT '待处理' COMMENT '异常状态：待处理/已处理',
+		driver_name VARCHAR(64) COMMENT '司机姓名',
+		vehicle_no VARCHAR(32) COMMENT '车牌号',
+		phone VARCHAR(32) COMMENT '电话',
+		exception_type_id BIGINT COMMENT '异常类型ID（关联pd_exception_types）',
+		exception_type_name VARCHAR(64) COMMENT '异常类型名称（冗余）',
+		description TEXT COMMENT '异常说明',
+		reporter VARCHAR(64) COMMENT '上报人',
+		reported_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '上报时间',
+		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+		updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+		INDEX idx_status (status),
+		INDEX idx_driver_name (driver_name),
+		INDEX idx_vehicle_no (vehicle_no),
+		INDEX idx_exception_type_id (exception_type_id),
+		INDEX idx_reported_at (reported_at),
+		INDEX idx_reporter (reporter),
+		FOREIGN KEY (exception_type_id) REFERENCES pd_exception_types(id) ON DELETE SET NULL
+	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='异常上报表';
+	""",
 ]
 
 def init_permission_definitions():
