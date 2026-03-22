@@ -151,7 +151,8 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8007
 
 ### 订货计划（`/api/v1/order-plans`）
 
-- 录入、列表、详情、改车数、审核；审核通过与报货计划已定车数联动（与 `increment-confirmed-trucks` 规则一致，详见 `/docs` 与该模块说明）。
+- 录入、列表、详情、改车数、审核；列表与详情均返回 `audit_remark`（审核备注）。
+- 审核接口：`audit_result` 为 **审核未通过** 时 **`remark` 必填**（须写明原因）；**审核通过** 时备注可选。审核通过与报货计划已定车数联动（与 `increment-confirmed-trucks` 规则一致，详见 `/docs`）。
 
 ### 磅单管理（`/api/v1/weighbills`）
 

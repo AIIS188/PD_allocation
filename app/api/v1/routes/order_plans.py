@@ -4,7 +4,7 @@
 from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from app.services.order_plan_service import get_order_plan_service, OrderPlanService
 from core.auth import get_current_user
@@ -43,8 +43,15 @@ class OrderPlanAuditRequest(BaseModel):
     remark: Optional[str] = Field(
         None,
         max_length=4000,
-        description="审核原因或备注（可选）",
+        description="审核备注/原因；**审核未通过时必填**，审核通过时可选",
     )
+
+    @model_validator(mode="after")
+    def remark_required_when_rejected(self):
+        if self.audit_result == "审核未通过":
+            if self.remark is None or not str(self.remark).strip():
+                raise ValueError("审核未通过时必须填写审核备注，请写明原因")
+        return self
 
 
 @router.post("/", summary="录入订货计划", response_model=dict)
@@ -95,7 +102,12 @@ async def audit_order_plan(
     raise HTTPException(status_code=400, detail=err)
 
 
-@router.get("/", summary="订货计划列表（支持多条件筛选）", response_model=dict)
+@router.get(
+    "/",
+    summary="订货计划列表（支持多条件筛选）",
+    response_model=dict,
+    description="列表每条记录包含 `audit_remark`（审核备注，未填写时为 null）。",
+)
 async def list_order_plans(
     audit_status: Optional[str] = Query(
         None, description="审核状态：待审核/审核通过/审核未通过"

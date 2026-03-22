@@ -343,6 +343,11 @@ class OrderPlanService:
 
         _ensure_order_plan_remark_column()
         rmk = (remark or "").strip()
+        if audit_result == AUDIT_STATUS_REJECTED and not rmk:
+            return {
+                "success": False,
+                "error": "审核未通过时必须填写审核备注，请写明原因",
+            }
         rmk_val: Optional[str] = rmk if rmk else None
 
         try:
