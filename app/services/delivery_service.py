@@ -13,6 +13,7 @@ from typing import Dict, List, Optional, Any
 from datetime import datetime
 from app.core.paths import UPLOADS_DIR
 from app.services.delivery_contract_price_service import get_delivery_contract_price_service
+from app.utils.product_mapping import convert_to_mill_product
 from core.database import get_conn
 
 logger = logging.getLogger(__name__)
@@ -51,22 +52,7 @@ class DeliveryService:
             api_key=os.getenv("DASHSCOPE_API_KEY"),
             base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
         )
-        self.owner_to_mill_mapping = {
-        "电动": "电动车",
-        "黑皮": "黑皮",
-        "EFB": "黑皮",
-        "电轿": "新能源",
-        "AGM": "新能源",
-        "电信": "通信",
-        "摩托车": "摩托车",
-        "小四斤": "摩托车",
-        "大白": "大白",
-        "管式": "牵引"
-    }
-        
-    def _convert_to_mill_product(self, owner_product: str) -> str:
-        """将货主品种转换为冶炼厂品种（用于合同匹配）"""
-        return self.owner_to_mill_mapping.get(owner_product, owner_product)
+        self._convert_to_mill_product = convert_to_mill_product
 
     def _normalize_driver_id_card(self, value: Optional[Any]) -> Optional[str]:
         """清洗司机身份证号，避免将无效超长值写入数据库。"""

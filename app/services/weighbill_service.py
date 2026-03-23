@@ -26,6 +26,7 @@ from pymysql.cursors import DictCursor
 
 from app.core.paths import UPLOADS_DIR
 from app.services.contract_service import get_conn
+from app.utils.product_mapping import convert_to_mill_product
 
 logger = logging.getLogger(__name__)
 
@@ -436,14 +437,15 @@ class WeighbillService:
             else:
                 result["match_message"] = "未找到匹配的报货订单，请手动填写"
 
-        # 获取合同单价（与原逻辑相同）
+        # 获取合同单价（套用品种映射，合同品种为冶炼厂标准名）
         if contract_no and product_name:
-            price = self.get_contract_price_by_product(contract_no, product_name)
+            mill_product = convert_to_mill_product(product_name)
+            price = self.get_contract_price_by_product(contract_no, mill_product)
             if price:
                 result["unit_price"] = price
                 if net_weight:
                     result["total_amount"] = round(price * net_weight, 2)
-                result["price_message"] = f"已获取合同单价（品种：{product_name}）"
+                result["price_message"] = f"已获取合同单价（品种：{mill_product}）"
             else:
                 result["price_message"] = "未找到合同单价，请手动填写"
         elif contract_no:
@@ -653,9 +655,12 @@ class WeighbillService:
             if not delivery_id:
                 return self._upload_failure("报单ID不能为空", delivery_id, product_name, data, current_user)
 
-            normalized_product = str(product_name).strip() if product_name is not None else ""
-            if not normalized_product:
+            raw_product = str(product_name).strip() if product_name is not None else ""
+            if not raw_product:
                 return self._upload_failure("品种名称不能为空", delivery_id, product_name, data, current_user)
+
+            # 套用品种映射，与报单、合同品种名称一致
+            normalized_product = convert_to_mill_product(raw_product)
 
             payload = dict(data or {})
             uploader_id = current_user.get("id") if current_user else None
@@ -922,16 +927,19 @@ class WeighbillService:
         fail_count = 0
 
         for item in price_updates:
-            product_name = item.get("product_name")
+            raw_product = item.get("product_name")
             new_price = item.get("unit_price")
-            if not product_name or new_price is None:
+            if not raw_product or new_price is None:
                 fail_count += 1
                 results.append({
-                    "product_name": product_name,
+                    "product_name": raw_product,
                     "success": False,
                     "error": "缺少品种名称或单价"
                 })
                 continue
+
+            # 套用品种映射
+            product_name = convert_to_mill_product(raw_product)
 
             try:
                 # 调用现有上传方法，只更新单价字段，不传图片
@@ -1093,7 +1101,9 @@ class WeighbillService:
                     continue
 
                 delivery_id = delivery_info["id"]
-                product_name = ocr_data.get("product_name") or delivery_info.get("product_name", "废电瓶")
+                raw_product = ocr_data.get("product_name") or delivery_info.get("product_name", "废电瓶")
+                # 套用品种映射，与报单、合同一致
+                product_name = convert_to_mill_product(raw_product)
 
                 # 获取合同单价
                 contract_no = ocr_data.get("contract_no") or delivery_info.get("contract_no")
