@@ -1,6 +1,7 @@
 from fastapi import APIRouter
 
 from app.api.v1.routes import (
+    agent_chat,
     balances,
     contracts,
     customers,
@@ -16,6 +17,7 @@ from app.api.v1.routes import (
 )
 
 api_router = APIRouter()
+api_router.include_router(agent_chat.router)
 api_router.include_router(contracts.router, tags=["合同管理"])
 api_router.include_router(customers.router, tags=["客户管理"])
 api_router.include_router(deliveries.router, tags=["销售台账/报货订单"])
