@@ -26,7 +26,6 @@ except ImportError:
     RAPIDOCR_AVAILABLE = False
     raise ImportError("请安装 RapidOCR：pip install rapidocr-onnxruntime")
 
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 PRODUCT_TYPES = ["电动车", "黑皮", "新能源", "通信", "摩托车", "大白", "牵引"]

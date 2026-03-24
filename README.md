@@ -29,33 +29,10 @@ uv sync
 
 ### 3) 配置环境变量
 
-推荐使用 `.env`。**应用通过 PyMySQL 连接数据库时读取的是 `MYSQL_*` 变量**（与 `database_setup.py` 一致）。`DATABASE_URL` 在 `app/core/config.py` 中主要为占位，**请勿只配置 `DATABASE_URL` 而省略 `MYSQL_*`**。
-
-```
-APP_NAME=PD API
-JWT_SECRET=请改为足够长的随机串
-JWT_ALGORITHM=HS256
-
-MYSQL_HOST=127.0.0.1
-MYSQL_PORT=3306
-MYSQL_USER=root
-MYSQL_PASSWORD=你的密码
-MYSQL_DATABASE=PD_db
-MYSQL_CHARSET=utf8mb4
-
-# 监听端口（main.py 默认 8007）
-PORT=8007
-
-# 可选：OpenAI（若使用相关能力）
-# OPENAI_API_KEY=
-
-# 可选：逗号分隔，默认 *
-# CORS_ALLOW_ORIGINS=http://127.0.0.1:3000,http://localhost:3000
-
-# 可选：日志目录与级别
-# LOG_DIR=logs
-# LOG_LEVEL=INFO
-```
+1. 复制模板并编辑： **`cp .env.example .env`**，按环境填写（**勿将真实 `.env` 提交到版本库**）。
+2. **数据库**：`database_setup.py` 与多数服务通过 **`MYSQL_*`** 连接；`DATABASE_URL` 在 `app/core/config.py` 等处为占位/兼容读取，**请勿只配 `DATABASE_URL` 而省略 `MYSQL_*`**。
+3. **扣子 Coze**（可选）：`app/core/config.py` 同时支持历史变量名（`Coze_url`、`project_id`、`session_id`、`YOUR_TOKEN`）与大写别名（`COZE_URL`、`COZE_PROJECT_ID`、`COZE_SESSION_ID`、`COZE_BEARER_TOKEN`），填一组即可。
+4. **其它可选项**（见 `.env.example` 内注释）：`CORS_ALLOW_ORIGINS`、`OPENAI_API_KEY`、日志相关 `LOG_DIR` / `LOG_LEVEL` / `LOG_ENABLE_CONSOLE` / `LOG_ENABLE_FILE` / `LOG_RETENTION_DAYS` 等。
 
 ### 4) 初始化 / 同步数据库表结构
 
@@ -177,10 +154,10 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8007
 
 ## 安全性说明
 
-- **务必修改 `JWT_SECRET`**，勿使用示例或仓库中的默认值。
+- **务必修改 `JWT_SECRET`**，勿使用 `.env.example` 或文档中的占位值。
+- **`.env` 含密钥，勿提交**；模板仅维护 **`/.env.example`**（无真实口令与 Token）。
 - **`GET /init-db` 无鉴权**，勿对公网开放。
 - **业务接口鉴权未全覆盖**，见上一节。
-- 密钥与生产配置勿提交到版本库。
 
 ## 开发与架构备注
 

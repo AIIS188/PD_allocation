@@ -2,9 +2,21 @@
 报货计划：录入、查询、更新与删除（含品类单价明细）
 """
 import logging
+import math
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
+
+# 与报单等业务一致：按每车 35 吨换算计划车数
+TONNAGE_PER_TRUCK = 35
+
+
+def planned_trucks_from_tonnage(tonnage: float) -> int:
+    """计划车数 = floor(计划吨数 / 35)；吨数 <= 0 时为 0。"""
+    t = float(tonnage or 0)
+    if t <= 0:
+        return 0
+    return int(math.floor(t / TONNAGE_PER_TRUCK))
 
 from pymysql.cursors import DictCursor
 
@@ -67,6 +79,10 @@ def apply_increment_confirmed_trucks(
     与 increment-confirmed-trucks 接口相同的累加逻辑，在调用方事务内执行（不 commit）。
     confirmed_trucks 可超过 planned_trucks；此时 unconfirmed_trucks 为 0（GREATEST(0, planned - 新已定)）。
     truck_count < 1 时为无副作用的成功（不执行 UPDATE）。
+
+    注意：MySQL 单表 UPDATE 中赋值从左到右，后列会读到前列已更新的值。
+    必须先写 unconfirmed_trucks（仍基于原 confirmed_trucks），再写 confirmed_trucks += truck_count，
+    否则会出现「未定车数 = planned - 2*增量」的重复扣减。
     """
     if truck_count < 1:
         return
@@ -74,8 +90,8 @@ def apply_increment_confirmed_trucks(
     cur.execute(
         """
         UPDATE pd_delivery_plans
-        SET confirmed_trucks = confirmed_trucks + %s,
-            unconfirmed_trucks = GREATEST(0, planned_trucks - confirmed_trucks - %s),
+        SET unconfirmed_trucks = GREATEST(0, planned_trucks - confirmed_trucks - %s),
+            confirmed_trucks = confirmed_trucks + %s,
             updated_by = %s,
             updated_by_name = %s
         WHERE plan_no = %s
@@ -170,6 +186,11 @@ class DeliveryPlanService:
         except ValueError as e:
             return {"success": False, "error": str(e)}
 
+        planned_tonnage_v = float(data.get("planned_tonnage", 0) or 0)
+        planned_trucks_v = planned_trucks_from_tonnage(planned_tonnage_v)
+        confirmed_v = int(data.get("confirmed_trucks", 0) or 0)
+        unconfirmed_v = max(0, planned_trucks_v - confirmed_v)
+
         _ensure_plan_audit_columns()
         try:
             with get_conn() as conn:
@@ -191,11 +212,11 @@ class DeliveryPlanService:
                                 data.get("smelter_name"),
                                 data.get("plan_name"),
                                 data["plan_start_date"],
-                                int(data.get("planned_trucks", 0)),
-                                float(data.get("planned_tonnage", 0)),
+                                planned_trucks_v,
+                                planned_tonnage_v,
                                 data.get("plan_status") or "生效中",
-                                int(data.get("confirmed_trucks", 0)),
-                                int(data.get("unconfirmed_trucks", 0)),
+                                confirmed_v,
+                                unconfirmed_v,
                                 operator_id,
                                 operator_name,
                                 operator_id,
@@ -219,10 +240,12 @@ class DeliveryPlanService:
                 finally:
                     conn.autocommit(prev_ac)
 
+            detail = self.get_plan(plan_id) if plan_id else {"success": False}
+            out_data = detail.get("data") if detail.get("success") else {"id": plan_id}
             return {
                 "success": True,
                 "message": "报货计划录入成功",
-                "data": {"id": plan_id},
+                "data": out_data,
             }
         except Exception as e:
             logger.error("create delivery plan failed: %s", e)
@@ -413,6 +436,17 @@ class DeliveryPlanService:
                             conn.rollback()
                             return {"success": False, "error": f"报货计划 ID {plan_id} 不存在"}
 
+                        if "planned_tonnage" in raw and raw["planned_tonnage"] is not None:
+                            pt = float(raw["planned_tonnage"])
+                            raw["planned_trucks"] = planned_trucks_from_tonnage(pt)
+                            cur.execute(
+                                "SELECT confirmed_trucks FROM pd_delivery_plans WHERE id = %s",
+                                (plan_id,),
+                            )
+                            crow = cur.fetchone()
+                            conf_now = int(crow["confirmed_trucks"]) if crow else 0
+                            raw["unconfirmed_trucks"] = max(0, int(raw["planned_trucks"]) - conf_now)
+
                         update_fields: list[str] = []
                         params: list[Any] = []
                         for field in allowed:
@@ -458,7 +492,9 @@ class DeliveryPlanService:
                 finally:
                     conn.autocommit(prev_ac)
 
-                return {"success": True, "message": "报货计划更新成功", "data": {"id": plan_id}}
+                detail = self.get_plan(plan_id)
+                out_data = detail.get("data") if detail.get("success") else {"id": plan_id}
+                return {"success": True, "message": "报货计划更新成功", "data": out_data}
         except Exception as e:
             logger.error("update delivery plan failed: %s", e)
             err = str(e)

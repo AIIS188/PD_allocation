@@ -2,23 +2,14 @@ from dotenv import load_dotenv
 import os
 
 import time
-from fastapi import FastAPI, Request, Depends
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-from fastapi.security import HTTPBearer
-from contextlib import asynccontextmanager
 from pathlib import Path
 import sys
-import uvicorn
 
-from apscheduler.schedulers.background import BackgroundScheduler
-from apscheduler.triggers.cron import CronTrigger
-# 项目根目录加入模块搜索路径，以便导入同级的 database_setup
+load_dotenv()
+
+# 须在导入 api_router（会间接加载 contract_service 等）之前执行，否则其它模块的 basicConfig
+# 会先占用 root.handlers，导致 setup_logging 跳过文件 handler，请求日志不会写入 app.log
 sys.path.append(str(Path(__file__).parent))
-from database_setup import create_tables
-from app.api.v1.api import api_router
-from app.core.config import settings
-from app.api.v1.user.routes import register_pd_auth_routes
 from app.core.logging import (
     get_logger,
     reset_log_request_id,
@@ -27,10 +18,25 @@ from app.core.logging import (
     set_log_user,
     setup_logging,
 )
+
+setup_logging()
+
+from fastapi import FastAPI, Request, Depends
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from fastapi.security import HTTPBearer
+from contextlib import asynccontextmanager
+import uvicorn
+
+from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.cron import CronTrigger
+from database_setup import create_tables
+from app.api.v1.api import api_router
+from app.core.config import settings
+from app.api.v1.user.routes import register_pd_auth_routes
 from core.auth import get_user_identity_from_authorization
 from app.services.contract_service import expire_contracts_after_grace
 
-load_dotenv()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期管理 - 启动时初始化数据库"""

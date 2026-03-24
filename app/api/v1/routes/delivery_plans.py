@@ -6,7 +6,12 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
-from app.services.delivery_plan_service import DeliveryPlanService, get_delivery_plan_service
+from app.services.delivery_plan_service import (
+    DeliveryPlanService,
+    TONNAGE_PER_TRUCK,
+    get_delivery_plan_service,
+    planned_trucks_from_tonnage,
+)
 from core.auth import get_current_user
 
 router = APIRouter(prefix="/delivery-plans", tags=["报货计划"])
@@ -39,8 +44,16 @@ class DeliveryPlanCreateRequest(BaseModel):
     smelter_name: Optional[str] = Field(None, description="冶炼厂", max_length=128)
     plan_name: Optional[str] = Field(None, description="计划名", max_length=128)
     plan_start_date: str = Field(..., description="计划开始日期 YYYY-MM-DD")
-    planned_trucks: int = Field(0, ge=0, description="计划车数")
-    planned_tonnage: float = Field(0, ge=0, description="计划吨数")
+    planned_trucks: int = Field(
+        0,
+        ge=0,
+        description="计划车数（可忽略；服务端按 planned_tonnage 用 floor(吨/35) 覆盖）",
+    )
+    planned_tonnage: float = Field(
+        0,
+        ge=0,
+        description="计划吨数；计划车数 = floor(吨数/35)，未定车数 = max(0, 计划车数-已定车数)",
+    )
     plan_status: str = Field("生效中", description="计划状态", max_length=32)
     confirmed_trucks: int = Field(0, ge=0, description="已定车数")
     unconfirmed_trucks: int = Field(0, ge=0, description="未定车数")
@@ -60,8 +73,16 @@ class DeliveryPlanUpdateRequest(BaseModel):
     smelter_name: Optional[str] = Field(None, description="冶炼厂", max_length=128)
     plan_name: Optional[str] = Field(None, description="计划名", max_length=128)
     plan_start_date: Optional[str] = Field(None, description="计划开始日期 YYYY-MM-DD")
-    planned_trucks: Optional[int] = Field(None, ge=0, description="计划车数")
-    planned_tonnage: Optional[float] = Field(None, ge=0, description="计划吨数")
+    planned_trucks: Optional[int] = Field(
+        None,
+        ge=0,
+        description="计划车数；若同时提交 planned_tonnage 则由吨数换算覆盖",
+    )
+    planned_tonnage: Optional[float] = Field(
+        None,
+        ge=0,
+        description="计划吨数；提交时重算计划车数 floor(吨/35) 并重算未定车数",
+    )
     plan_status: Optional[str] = Field(None, description="计划状态", max_length=32)
     confirmed_trucks: Optional[int] = Field(None, ge=0, description="已定车数")
     unconfirmed_trucks: Optional[int] = Field(None, ge=0, description="未定车数")
@@ -116,6 +137,24 @@ async def increment_confirmed_trucks(
     if "不存在" in str(err):
         raise HTTPException(status_code=404, detail=err)
     raise HTTPException(status_code=400, detail=err)
+
+
+@router.get(
+    "/tonnage-to-trucks",
+    summary="按吨数换算计划车数（仅预览，不落库）",
+    response_model=dict,
+)
+async def tonnage_to_planned_trucks(
+    tonnage: float = Query(..., ge=0, description="计划吨数"),
+):
+    """floor(吨数/35)，供前端输入吨数后即时展示车数。"""
+    trucks = planned_trucks_from_tonnage(tonnage)
+    return {
+        "planned_tonnage": tonnage,
+        "planned_trucks": trucks,
+        "tonnage_per_truck": TONNAGE_PER_TRUCK,
+        "formula": "planned_trucks = floor(planned_tonnage / 35)",
+    }
 
 
 @router.get("/", summary="查询报货计划列表", response_model=dict)
