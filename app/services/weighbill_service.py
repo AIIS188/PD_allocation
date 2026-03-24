@@ -24,6 +24,7 @@ except ImportError:
 
 from pymysql.cursors import DictCursor
 
+from app.core.logging import log_price_change
 from app.core.paths import UPLOADS_DIR
 from app.services.contract_service import get_conn
 from app.utils.product_mapping import convert_to_mill_product
@@ -751,6 +752,17 @@ class WeighbillService:
                     if unit_price_decimal is not None:
                         total_amount_decimal = (unit_price_decimal * net_weight_decimal).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
 
+                    old_unit_price_audit = None
+                    if existing:
+                        oup = existing.get("unit_price")
+                        if oup not in (None, ""):
+                            try:
+                                old_unit_price_audit = Decimal(str(oup)).quantize(
+                                    Decimal("0.01"), rounding=ROUND_HALF_UP
+                                )
+                            except Exception:
+                                old_unit_price_audit = None
+
                     final_upload_status = '已上传' if final_image_path else '待上传'
                     if final_upload_status == '已上传':
                         final_ocr_status = '已修正' if is_manual else '已确认'
@@ -810,6 +822,21 @@ class WeighbillService:
                         cur.execute(sql, tuple(params))
                         weighbill_id = existing['id']
                         action = 'updated'
+                        if old_unit_price_audit != unit_price_decimal:
+                            log_price_change(
+                                "weighbill_unit_price_change",
+                                weighbill_id=weighbill_id,
+                                delivery_id=delivery_id,
+                                product_name=normalized_product,
+                                old_unit_price=float(old_unit_price_audit)
+                                if old_unit_price_audit is not None
+                                else None,
+                                new_unit_price=float(unit_price_decimal)
+                                if unit_price_decimal is not None
+                                else None,
+                                operator_id=uploader_id,
+                                operator_name=uploader_name,
+                            )
                     else:
                         insert_fields = [
                             "weigh_date", "delivery_time", "weigh_ticket_no", "contract_no","contract_id",
@@ -855,6 +882,16 @@ class WeighbillService:
                         cur.execute(sql, tuple(insert_values))
                         weighbill_id = cur.lastrowid
                         action = 'created'
+                        if unit_price_decimal is not None:
+                            log_price_change(
+                                "weighbill_unit_price_set",
+                                weighbill_id=weighbill_id,
+                                delivery_id=delivery_id,
+                                product_name=normalized_product,
+                                unit_price=float(unit_price_decimal),
+                                operator_id=uploader_id,
+                                operator_name=uploader_name,
+                            )
 
             if any(key in payload for key in ("warehouse", "payee")):
                 self._sync_delivery_fields(delivery_id, payload)
@@ -1744,7 +1781,11 @@ class WeighbillService:
 
                         # 3. 更新该报单下所有磅单的合同及单价
                         cur.execute(
-                            "SELECT id, product_name, net_weight FROM pd_weighbills WHERE delivery_id = %s",
+                            """
+                            SELECT id, product_name, net_weight, unit_price
+                            FROM pd_weighbills
+                            WHERE delivery_id = %s
+                            """,
                             (delivery_id,),
                         )
                         all_wbs = cur.fetchall() or []
@@ -1756,7 +1797,36 @@ class WeighbillService:
                                 new_total = None
                                 nw = r.get("net_weight")
                                 if nw is not None:
-                                    new_total = float(Decimal(str(new_price)) * Decimal(str(nw))).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+                                    new_total = (
+                                        Decimal(str(new_price)) * Decimal(str(nw))
+                                    ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+                                old_up = r.get("unit_price")
+                                try:
+                                    old_dec = (
+                                        Decimal(str(old_up)).quantize(
+                                            Decimal("0.01"), rounding=ROUND_HALF_UP
+                                        )
+                                        if old_up not in (None, "")
+                                        else None
+                                    )
+                                except Exception:
+                                    old_dec = None
+                                new_dec = Decimal(str(new_price)).quantize(
+                                    Decimal("0.01"), rounding=ROUND_HALF_UP
+                                )
+                                if old_dec != new_dec:
+                                    log_price_change(
+                                        "weighbill_unit_price_cascade",
+                                        weighbill_id=wid,
+                                        delivery_id=delivery_id,
+                                        product_name=pname,
+                                        old_unit_price=float(old_dec)
+                                        if old_dec is not None
+                                        else None,
+                                        new_unit_price=float(new_dec),
+                                        contract_id=contract_id,
+                                        contract_no=new_contract_no,
+                                    )
                                 cur.execute(
                                     """
                                     UPDATE pd_weighbills

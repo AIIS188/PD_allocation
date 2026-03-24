@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional
 
 from pymysql.cursors import DictCursor
 
+from app.core.logging import log_price_change
 from app.services.contract_service import get_conn
 
 logger = logging.getLogger(__name__)
@@ -224,6 +225,7 @@ class DeliveryContractPriceService:
         if not items:
             return {"success": False, "error": "items 不能为空"}
         try:
+            price_audit_rows: List[Dict[str, Any]] = []
             with get_conn() as conn:
                 prev_ac = conn.get_autocommit()
                 conn.autocommit(False)
@@ -255,6 +257,33 @@ class DeliveryContractPriceService:
                             if row_id is not None:
                                 cur.execute(
                                     """
+                                    SELECT id, product_name, unit_price
+                                    FROM pd_delivery_contract_product_prices
+                                    WHERE id = %s AND delivery_id = %s
+                                    """,
+                                    (int(row_id), delivery_id),
+                                )
+                                prev_row = cur.fetchone()
+                                if not prev_row:
+                                    conn.rollback()
+                                    return {
+                                        "success": False,
+                                        "error": f"记录 id={row_id} 不属于该报单或不存在",
+                                    }
+                                old_up = prev_row.get("unit_price")
+                                try:
+                                    old_dec = (
+                                        Decimal(str(old_up))
+                                        if old_up is not None
+                                        else None
+                                    )
+                                except Exception:
+                                    old_dec = None
+                                if old_dec is not None:
+                                    old_dec = old_dec.quantize(Decimal("0.01"))
+                                new_dec = price.quantize(Decimal("0.01"))
+                                cur.execute(
+                                    """
                                     UPDATE pd_delivery_contract_product_prices
                                     SET unit_price = %s
                                     WHERE id = %s AND delivery_id = %s
@@ -267,7 +296,44 @@ class DeliveryContractPriceService:
                                         "success": False,
                                         "error": f"记录 id={row_id} 不属于该报单或不存在",
                                     }
+                                if old_dec != new_dec:
+                                    price_audit_rows.append(
+                                        {
+                                            "delivery_id": delivery_id,
+                                            "price_row_id": int(row_id),
+                                            "product_name": prev_row.get("product_name"),
+                                            "old_unit_price": float(old_dec) if old_dec is not None else None,
+                                            "new_unit_price": float(new_dec),
+                                        }
+                                    )
                             else:
+                                cur.execute(
+                                    """
+                                    SELECT id, unit_price
+                                    FROM pd_delivery_contract_product_prices
+                                    WHERE delivery_id = %s AND product_name = %s
+                                    """,
+                                    (delivery_id, pname),
+                                )
+                                prev_row = cur.fetchone()
+                                if not prev_row:
+                                    conn.rollback()
+                                    return {
+                                        "success": False,
+                                        "error": f"品类「{pname}」在该报单下不存在",
+                                    }
+                                old_up = prev_row.get("unit_price")
+                                try:
+                                    old_dec = (
+                                        Decimal(str(old_up))
+                                        if old_up is not None
+                                        else None
+                                    )
+                                except Exception:
+                                    old_dec = None
+                                if old_dec is not None:
+                                    old_dec = old_dec.quantize(Decimal("0.01"))
+                                new_dec = price.quantize(Decimal("0.01"))
                                 cur.execute(
                                     """
                                     UPDATE pd_delivery_contract_product_prices
@@ -282,7 +348,19 @@ class DeliveryContractPriceService:
                                         "success": False,
                                         "error": f"品类「{pname}」在该报单下不存在",
                                     }
+                                if old_dec != new_dec:
+                                    price_audit_rows.append(
+                                        {
+                                            "delivery_id": delivery_id,
+                                            "price_row_id": int(prev_row["id"]),
+                                            "product_name": pname,
+                                            "old_unit_price": float(old_dec) if old_dec is not None else None,
+                                            "new_unit_price": float(new_dec),
+                                        }
+                                    )
                     conn.commit()
+                    for row in price_audit_rows:
+                        log_price_change("delivery_contract_product_price", **row)
                 except Exception:
                     conn.rollback()
                     raise

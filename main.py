@@ -19,7 +19,14 @@ from database_setup import create_tables
 from app.api.v1.api import api_router
 from app.core.config import settings
 from app.api.v1.user.routes import register_pd_auth_routes
-from app.core.logging import get_logger, reset_log_user, set_log_user, setup_logging
+from app.core.logging import (
+    get_logger,
+    reset_log_request_id,
+    reset_log_user,
+    set_log_request_id,
+    set_log_user,
+    setup_logging,
+)
 from core.auth import get_user_identity_from_authorization
 from app.services.contract_service import expire_contracts_after_grace
 
@@ -82,34 +89,40 @@ logger = get_logger("app")
 async def request_logger(request: Request, call_next):
     start_time = time.perf_counter()
     identity = get_user_identity_from_authorization(request.headers.get("Authorization"))
-    token = set_log_user(identity)
+    user_token = set_log_user(identity)
+    req_token = set_log_request_id(
+        request.headers.get("X-Request-ID") or request.headers.get("X-Request-Id")
+    )
     try:
         response = await call_next(request)
     except Exception:
-        logger.exception("request failed method=%s path=%s", request.method, request.url.path)
+        logger.exception(
+            "request failed method=%s path=%s",
+            request.method,
+            request.url.path,
+        )
         return JSONResponse(status_code=500, content={"detail": "Internal Server Error"})
-    finally:
-        reset_log_user(token)
-
-    duration_ms = (time.perf_counter() - start_time) * 1000
-    logger.info(
-        "request method=%s path=%s status=%s duration_ms=%.2f",
-        request.method,
-        request.url.path,
-        response.status_code,
-        duration_ms,
-    )
-
-    if request.method in {"POST", "PUT", "DELETE"}:
+    else:
+        duration_ms = (time.perf_counter() - start_time) * 1000
         logger.info(
-            "audit method=%s path=%s status=%s duration_ms=%.2f",
+            "request method=%s path=%s status=%s duration_ms=%.2f",
             request.method,
             request.url.path,
             response.status_code,
             duration_ms,
         )
-
-    return response
+        if request.method in {"POST", "PUT", "DELETE"}:
+            logger.info(
+                "audit method=%s path=%s status=%s duration_ms=%.2f",
+                request.method,
+                request.url.path,
+                response.status_code,
+                duration_ms,
+            )
+        return response
+    finally:
+        reset_log_user(user_token)
+        reset_log_request_id(req_token)
 
 
 @app.get("/healthz")

@@ -6,7 +6,7 @@ import os
 import re
 import logging
 import tempfile
-from decimal import Decimal, ROUND_FLOOR
+from decimal import Decimal, ROUND_FLOOR, ROUND_HALF_UP
 from typing import List, Dict, Optional, Any, Tuple
 from contextlib import contextmanager
 from datetime import datetime, timedelta, date
@@ -16,6 +16,8 @@ from cv2 import dnn_superres  # 需确保 opencv-contrib-python 已安装
 import pymysql
 from PIL import Image, ImageEnhance, ImageFilter
 from pathlib import Path
+
+from app.core.logging import log_price_change
 
 try:
     from rapidocr_onnxruntime import RapidOCR
@@ -842,13 +844,62 @@ class ContractService:
 
                     # 更新品种明细
                     if products is not None:
+                        cur.execute(
+                            "SELECT product_name, unit_price FROM pd_contract_products WHERE contract_id = %s",
+                            (contract_id,),
+                        )
+                        old_by_name = {
+                            row[0]: row[1]
+                            for row in (cur.fetchall() or [])
+                            if row and row[0] is not None
+                        }
+                        contract_no_for_log = new_contract_no or old_contract_no or ""
+
                         cur.execute("DELETE FROM pd_contract_products WHERE contract_id = %s", (contract_id,))
                         for idx, product in enumerate(products):
+                            pname = product["product_name"]
+                            new_up = product.get("unit_price")
+                            try:
+                                new_dec = (
+                                    Decimal(str(new_up)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+                                    if new_up is not None
+                                    else None
+                                )
+                            except Exception:
+                                new_dec = None
+                            old_raw = old_by_name.get(pname)
+                            try:
+                                old_dec = (
+                                    Decimal(str(old_raw)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+                                    if old_raw is not None
+                                    else None
+                                )
+                            except Exception:
+                                old_dec = None
+
+                            if old_dec is None and new_dec is not None:
+                                log_price_change(
+                                    "contract_product_price_initial",
+                                    contract_id=contract_id,
+                                    contract_no=contract_no_for_log,
+                                    product_name=pname,
+                                    unit_price=float(new_dec),
+                                )
+                            elif old_dec is not None and new_dec is not None and old_dec != new_dec:
+                                log_price_change(
+                                    "contract_product_price_change",
+                                    contract_id=contract_id,
+                                    contract_no=contract_no_for_log,
+                                    product_name=pname,
+                                    old_unit_price=float(old_dec),
+                                    new_unit_price=float(new_dec),
+                                )
+
                             cur.execute("""
                                 INSERT INTO pd_contract_products 
                                 (contract_id, product_name, unit_price, sort_order)
                                 VALUES (%s, %s, %s, %s)
-                            """, (contract_id, product["product_name"], product.get("unit_price"), idx))
+                            """, (contract_id, pname, product.get("unit_price"), idx))
 
                     return {
                         "success": True,
