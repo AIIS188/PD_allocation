@@ -1,15 +1,14 @@
 """
-应用日志约定（摘要）：
+应用日志约定：
 
-- 使用 ``get_logger(__name__)`` 获取与模块绑定的记录器名称，便于在聚合日志中按 ``name`` 过滤。
-- 消息优先使用结构化占位符：``logger.info("order id=%s status=%s", oid, st)``，避免 ``f-string`` 在无输出时仍求值。
-- 异常用 ``logger.exception("context")`` 或 ``logger.error("...", exc_info=True)``。
-- HTTP 请求内会自动注入 ``user``、``req``（请求 ID）；客户端可传 ``X-Request-ID`` 便于链路追踪。
-- **单价等敏感变更**请使用 ``log_price_change()``，写入独立按日滚动的 ``price_audit.log``。
+- 使用 ``get_logger(__name__)``，日志中的 ``name`` 便于按模块过滤。
+- 消息优先用占位符写法（如 ``logger.info("订单 id=%s 状态=%s", oid, st)``），少用 ``f-string``，避免未输出仍求值。
+- 异常用 ``logger.exception("说明")`` 或 ``logger.error("说明", exc_info=True)``。
+- HTTP 请求内自动带 ``user``、``req``；客户端可传 ``X-Request-ID`` 做链路关联。
+- 单价等敏感变更请用 ``log_price_change()``，写入按日滚动的 ``price_audit.log``。
 
-环境变量：
-``LOG_LEVEL``、``LOG_DIR``、``LOG_ENABLE_CONSOLE``（默认 1）、``LOG_ENABLE_FILE``（默认 1）、
-``LOG_RETENTION_DAYS``（按天滚动的历史文件保留份数，默认 30，对应约 30 天）。
+环境变量：``LOG_LEVEL``、``LOG_DIR``、``LOG_ENABLE_CONSOLE``、``LOG_ENABLE_FILE``（后两者默认开启）、
+``LOG_RETENTION_DAYS``（按日归档保留份数，默认 30）。
 """
 
 from __future__ import annotations

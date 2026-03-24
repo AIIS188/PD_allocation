@@ -13,40 +13,6 @@ from app.services.contract_service import get_conn
 
 logger = logging.getLogger(__name__)
 
-_TABLE_ENSURED = False
-
-
-def _ensure_table() -> None:
-    global _TABLE_ENSURED
-    if _TABLE_ENSURED:
-        return
-    try:
-        with get_conn() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS pd_delivery_contract_product_prices (
-                        id BIGINT AUTO_INCREMENT PRIMARY KEY COMMENT '主键ID',
-                        delivery_id BIGINT NOT NULL COMMENT '报单ID（pd_deliveries.id）',
-                        contract_id BIGINT NOT NULL COMMENT '合同ID（同步自报单关联合同）',
-                        product_name VARCHAR(64) NOT NULL COMMENT '品类名称',
-                        unit_price DECIMAL(12, 2) NOT NULL COMMENT '单价（元）',
-                        sort_order INT NOT NULL DEFAULT 0 COMMENT '排序',
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
-                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
-                        UNIQUE KEY uk_delivery_product (delivery_id, product_name),
-                        INDEX idx_delivery_id (delivery_id),
-                        INDEX idx_contract_id (contract_id),
-                        CONSTRAINT fk_dcpp_delivery FOREIGN KEY (delivery_id)
-                            REFERENCES pd_deliveries(id) ON DELETE CASCADE
-                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='报单关联合同品类单价表';
-                    """
-                )
-            conn.commit()
-        _TABLE_ENSURED = True
-    except Exception as e:
-        logger.warning("ensure pd_delivery_contract_product_prices: %s", e)
-
 
 def _serialize_row(row: Dict[str, Any]) -> Dict[str, Any]:
     out = dict(row)
@@ -87,7 +53,6 @@ class DeliveryContractPriceService:
         return None, "报单未关联合同，无法同步品类单价"
 
     def list_by_delivery(self, delivery_id: int) -> Dict[str, Any]:
-        _ensure_table()
         try:
             with get_conn() as conn:
                 with conn.cursor(DictCursor) as cur:
@@ -114,7 +79,6 @@ class DeliveryContractPriceService:
         self, delivery_ids: List[int]
     ) -> Dict[int, List[Dict[str, Any]]]:
         """批量查询多个报单下的合同品类单价，供列表接口拼接。"""
-        _ensure_table()
         if not delivery_ids:
             return {}
         try:
@@ -144,7 +108,6 @@ class DeliveryContractPriceService:
             return {}
 
     def sync_from_contract(self, delivery_id: int) -> Dict[str, Any]:
-        _ensure_table()
         try:
             with get_conn() as conn:
                 prev_ac = conn.get_autocommit()
@@ -221,7 +184,6 @@ class DeliveryContractPriceService:
         delivery_id: int,
         items: List[Dict[str, Any]],
     ) -> Dict[str, Any]:
-        _ensure_table()
         if not items:
             return {"success": False, "error": "items 不能为空"}
         try:

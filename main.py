@@ -13,7 +13,7 @@ import uvicorn
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
-# 确保能导入 database_setup
+# 项目根目录加入模块搜索路径，以便导入同级的 database_setup
 sys.path.append(str(Path(__file__).parent))
 from database_setup import create_tables
 from app.api.v1.api import api_router

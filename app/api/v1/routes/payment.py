@@ -841,12 +841,12 @@ def record_payment(
     2. 更新付款状态 is_paid = 1（已回首笔款）
     3. 补全之前缺失的回款相关字段
     
-    Args:
+    参数:
         body: 回款记录请求体
         current_user: 当前用户信息
 
-    Returns:
-        录入结果信息（包含完整的收款明细信息）
+    返回:
+        录入结果信息（含完整收款明细）
     """
     check_finance_permission(current_user)
 
@@ -1042,23 +1042,6 @@ async def upload_payment_excel(
     try:
         with get_conn() as conn:
             with conn.cursor() as cur:
-                # 检查是否存在上传记录表
-                cur.execute("""
-                    CREATE TABLE IF NOT EXISTS pd_payment_upload_logs (
-                        id BIGINT AUTO_INCREMENT PRIMARY KEY,
-                        original_filename VARCHAR(255) NOT NULL COMMENT '原始文件名',
-                        saved_filename VARCHAR(255) NOT NULL COMMENT '保存文件名',
-                        file_path VARCHAR(500) NOT NULL COMMENT '文件路径',
-                        file_size BIGINT COMMENT '文件大小(字节)',
-                        remark VARCHAR(500) COMMENT '备注',
-                        uploaded_by BIGINT COMMENT '上传人ID',
-                        uploaded_by_name VARCHAR(64) COMMENT '上传人姓名',
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        INDEX idx_created_at (created_at)
-                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='回款文件上传日志';
-                """)
-                
-                # 插入上传记录
                 cur.execute("""
                     INSERT INTO pd_payment_upload_logs 
                     (original_filename, saved_filename, file_path, file_size, 
@@ -1330,29 +1313,7 @@ async def import_payment_excel(
                             company_type=company_type  # 传递公司类型
                         )
                         
-                        # 5.4 保存原始导入数据到 pd_payment_excel_imports
-                        # 确保表存在
-                        cur.execute("""
-                            CREATE TABLE IF NOT EXISTS pd_payment_excel_imports (
-                                id BIGINT AUTO_INCREMENT PRIMARY KEY,
-                                payment_detail_id BIGINT COMMENT '关联的收款明细ID',
-                                weighbill_no VARCHAR(64) COMMENT '磅单号',
-                                original_amount DECIMAL(15, 2) COMMENT 'Excel中的原始金额',
-                                processed_amount DECIMAL(15, 2) COMMENT '处理后金额',
-                                company_type VARCHAR(20) COMMENT '公司类型：yuguang/jinli',
-                                raw_data JSON COMMENT '原始行数据',
-                                imported_by BIGINT COMMENT '导入人ID',
-                                imported_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                                status VARCHAR(20) DEFAULT 'success' COMMENT '处理状态',
-                                fail_reason VARCHAR(500) COMMENT '失败原因',
-                                INDEX idx_weighbill_no (weighbill_no),
-                                INDEX idx_payment_detail_id (payment_detail_id),
-                                INDEX idx_imported_at (imported_at),
-                                INDEX idx_company_type (company_type)
-                            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='回款Excel导入明细记录';
-                        """)
-                        
-                        # 插入导入记录
+                        # 5.4 保存原始导入数据到 pd_payment_excel_imports（表由 database_setup 创建）
                         cur.execute("""
                             INSERT INTO pd_payment_excel_imports 
                             (payment_detail_id, weighbill_no, original_amount, 

@@ -331,7 +331,7 @@ class DeliveryService:
                                     'unit_price': None,
                                     'skipped_contracts': []
                                 }
-                    # Step 1: 品种匹配（只匹配unit_price>0的有效品种）
+                    # 步骤1：品种匹配（仅 unit_price>0 的有效品种）
                     # ===== 需求3：优先匹配最先到期的合同 =====
                     cur.execute("""
                         SELECT c.contract_no, p.unit_price, c.total_quantity,
@@ -359,7 +359,7 @@ class DeliveryService:
                             'skipped_contracts': []
                         }
 
-                    # Step 2: 遍历所有匹配的合同，找车数足够的
+                    # 步骤2：遍历匹配合同，选取车数余量足够的
                     report_date_obj = None
                     if report_date:
                         try:
@@ -470,7 +470,7 @@ class DeliveryService:
                             # 车数不足，继续检查下一个合同
                             continue
 
-                    # Step 3: 所有匹配的合同车数都不够
+                    # 步骤3：匹配合同车数均不足
                     error_details = []
                     for info in skipped_contracts:
                         error_details.append(
@@ -491,7 +491,7 @@ class DeliveryService:
                     }
                         
 
-                    # Step 3: 所有匹配的合同车数都不够
+                    # 步骤3：匹配合同车数均不足
                     # 构建详细的错误信息
                     error_details = []
                     for info in skipped_contracts:
@@ -1397,14 +1397,14 @@ class DeliveryService:
         """
         批量更新报单联单图片（复用数据库连接，提高性能）
 
-        Args:
+        参数:
             items: 上传项列表，每项包含：
                 - delivery_id: 报单ID
                 - image_bytes: 图片字节数据
                 - has_delivery_order: 联单状态（有/无）
             uploaded_by: 上传者身份（司机/公司）
 
-        Returns:
+        返回:
             结果列表，每项包含 success、delivery_id、image_path 等
         """
         results = []

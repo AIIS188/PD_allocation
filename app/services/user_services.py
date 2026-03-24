@@ -1,6 +1,6 @@
 import bcrypt
 import re
-from typing import Optional, Dict, Any
+from typing import Any, Dict, List, Optional
 from enum import IntEnum
 import json
 from core.database import get_conn
@@ -99,14 +99,14 @@ class AuthService:
         """
         用户认证（登录）
         
-        Args:
+        参数:
             account: 登录账号
             password: 密码
             
-        Returns:
+        返回:
             用户信息字典
             
-        Raises:
+        抛出:
             ValueError: 账号或密码错误
         """
         with get_conn() as conn:
@@ -144,7 +144,7 @@ class AuthService:
         """
         创建新用户
         
-        Args:
+        参数:
             name: 用户姓名
             account: 登录账号
             password: 密码
@@ -153,10 +153,10 @@ class AuthService:
             email: 邮箱（可选）
             created_by: 创建人ID（可选）
             
-        Returns:
+        返回:
             新用户ID
             
-        Raises:
+        抛出:
             ValueError: 参数校验失败或账号已存在
         """
         # 参数校验
@@ -259,11 +259,11 @@ class AuthService:
         """
         更新用户信息
         
-        Args:
+        参数:
             user_id: 用户ID
             **kwargs: 要更新的字段
             
-        Returns:
+        返回:
             是否更新成功
         """
         allowed_fields = ["name", "phone", "email", "role"]
@@ -409,13 +409,13 @@ class AuthService:
         """
         获取用户列表（分页）
         
-        Args:
+        参数:
             page: 页码
             size: 每页数量
             role: 角色筛选
             keyword: 关键词搜索（姓名/账号）
             
-        Returns:
+        返回:
             包含列表和分页信息的字典
         """
         with get_conn() as conn:
@@ -531,22 +531,12 @@ class PermissionService:
         cls._load_definitions()
     @staticmethod
     def ensure_table_exists():
-        """确保权限表、角色模板表、权限定义表存在"""
-        # 原有代码不变，但需保证 pd_permission_definitions 已创建
+        """
+        若角色模板表为空则写入默认模板。
+        表结构由 database_setup.create_tables() 创建，不在此重复 DDL。
+        """
         with get_conn() as conn:
             with conn.cursor() as cur:
-                # 原有 pd_user_permissions 表创建代码...
-                cur.execute("""
-                    CREATE TABLE IF NOT EXISTS pd_role_templates (
-                        id BIGINT AUTO_INCREMENT PRIMARY KEY,
-                        role VARCHAR(32) NOT NULL UNIQUE,
-                        template_json TEXT NOT NULL,
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-                """)
-                
-                # 检查是否已有数据，有则跳过初始化
                 cur.execute("SELECT COUNT(*) as count FROM pd_role_templates")
                 row = cur.fetchone()
                 if row and row['count'] > 0:
@@ -598,21 +588,15 @@ class PermissionService:
                     },
                 }
                 for role, perms in default_role_templates.items():
-                    # 补齐所有字段（未在模板中定义的置0）
                     full_perms = {f: perms.get(f, 0) for f in PermissionService.get_all_fields()}
-                    cur.execute("""
-                        INSERT INTO pd_role_templates (role, template_json) 
+                    cur.execute(
+                        """
+                        INSERT INTO pd_role_templates (role, template_json)
                         VALUES (%s, %s)
-                    """, (role, json.dumps(full_perms)))
-                conn.commit()
-                for role, perms in default_role_templates.items():
-                    # 补齐所有字段（未在模板中定义的置0）
-                    full_perms = {f: perms.get(f, 0) for f in PermissionService.get_all_fields()}
-                    cur.execute("""
-                        INSERT INTO pd_role_templates (role, template_json) 
-                        VALUES (%s, %s) 
                         ON DUPLICATE KEY UPDATE template_json = VALUES(template_json)
-                    """, (role, json.dumps(full_perms)))
+                        """,
+                        (role, json.dumps(full_perms)),
+                    )
                 conn.commit()
 
     # ---------- 角色模板相关 ----------
@@ -633,17 +617,14 @@ class PermissionService:
         full_template = {field: template.get(field, 0) for field in all_fields}
         return full_template
 
-    # 在 PermissionService 类中添加
-    from typing import List, Optional
-
     @staticmethod
     def apply_role_template_to_users(role: str, user_ids: Optional[List[int]] = None) -> int:
         """
         将指定角色的权限模板应用到用户（覆盖用户现有权限）
-        Args:
+        参数:
             role: 角色名称
             user_ids: 可选的用户ID列表，如果为None则应用到所有该角色的用户
-        Returns:
+        返回:
             更新的用户数量
         """
         # 获取模板（已包含所有字段）
@@ -680,7 +661,7 @@ class PermissionService:
     def update_role_template(role: str, permissions: Dict[str, bool], apply_to_existing: bool = False) -> bool:
         """
         更新角色模板
-        Args:
+        参数:
             role: 角色名称
             permissions: 权限字典
             apply_to_existing: 是否将更新后的模板应用到现有用户

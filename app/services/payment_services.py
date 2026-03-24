@@ -249,11 +249,11 @@ def calculate_payment_amount(unit_price: Decimal, net_weight: Decimal) -> Decima
     计算回款金额
     回款金额 = 回款单价（合同单价）* 净重
 
-    Args:
+    参数:
         unit_price: 合同单价
         net_weight: 净重
 
-    Returns:
+    返回:
         计算后的回款金额（保留2位小数）
     """
     amount = unit_price * net_weight
@@ -264,11 +264,11 @@ def determine_payment_status(total_amount: Decimal, paid_amount: Decimal) -> Pay
     """
     根据已付金额确定回款状态
 
-    Args:
+    参数:
         total_amount: 应回款总额
         paid_amount: 已回款金额
 
-    Returns:
+    返回:
         回款状态
     """
     if paid_amount <= 0:
@@ -716,7 +716,7 @@ class PaymentService:
         """
         创建收款明细台账（根据销售业务数据生成）
 
-        Args:
+        参数:
             sales_order_id: 销售订单ID
             smelter_name: 冶炼厂名称
             contract_no: 合同编号
@@ -726,10 +726,10 @@ class PaymentService:
             remark: 备注（可选）
             created_by: 创建人ID（可选）
 
-        Returns:
+        返回:
             收款明细ID
 
-        Raises:
+        抛出:
             ValueError: 参数校验失败
         """
         # 参数校验
@@ -819,7 +819,7 @@ class PaymentService:
         
         录入后会自动更新 is_paid = 1（已回首笔款）
 
-        Args:
+        参数:
             payment_detail_id: 收款明细ID
             payment_amount: 回款金额
             payment_stage: 回款阶段（定金/到货款/尾款）
@@ -829,10 +829,10 @@ class PaymentService:
             remark: 备注
             recorded_by: 录入人ID
 
-        Returns:
+        返回:
             更新后的收款明细信息
 
-        Raises:
+        抛出:
             ValueError: 参数校验失败或明细不存在
         """
         # 参数校验
@@ -943,16 +943,16 @@ class PaymentService:
         """
         手动更新付款状态（支持人工干预）
         
-        Args:
+        参数:
             payment_id: 收款明细ID
             is_paid: 是否回款（0-否, 1-是）
             is_paid_out: 是否支付（0-待打款, 1-已打款）
             updated_by: 更新人ID
             
-        Returns:
+        返回:
             更新后的状态信息
             
-        Raises:
+        抛出:
             ValueError: 收款明细不存在
         """
         with get_conn() as conn:
@@ -1810,10 +1810,10 @@ class PaymentService:
         """
         获取收款明细详情（包含回款记录）
         
-        Args:
+        参数:
             payment_id: 收款明细ID
             
-        Returns:
+        返回:
             收款明细详情，包含回款记录列表
         """
         with get_conn() as conn:
@@ -1954,7 +1954,7 @@ class PaymentService:
         """
         更新收款明细基础信息
         
-        Args:
+        参数:
             payment_id: 收款明细ID
             smelter_name: 冶炼厂名称
             contract_no: 合同编号
@@ -1962,10 +1962,10 @@ class PaymentService:
             remark: 备注
             updated_by: 更新人ID
             
-        Returns:
+        返回:
             是否更新成功
             
-        Raises:
+        抛出:
             ValueError: 收款明细不存在
         """
         with get_conn() as conn:
@@ -2031,13 +2031,13 @@ class PaymentService:
         """
         删除收款明细
         
-        Args:
+        参数:
             payment_id: 收款明细ID
             
-        Returns:
+        返回:
             是否删除成功
             
-        Raises:
+        抛出:
             ValueError: 收款明细不存在或已有回款记录无法删除
         """
         with get_conn() as conn:
@@ -2532,7 +2532,7 @@ class PaymentService:
         """
         更新或创建回款记录，写入arrival_paid_amount
         
-        Args:
+        参数:
             weighbill_no: 磅单号
             amount: 金额（已根据公司类型处理后的金额）
             match_info: 匹配到的磅单/报单信息
