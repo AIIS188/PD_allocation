@@ -2247,10 +2247,12 @@ class DeliveryService:
                     with open(file_path, "wb") as f:
                         f.write(pdf_bytes)
 
-                    # 更新数据库：只更新 delivery_order_pdf，不改变图片相关字段
+                    # 上传 PDF 也属于联单上传，需同步更新上传状态
                     cur.execute("""
                         UPDATE pd_deliveries 
                         SET delivery_order_pdf = %s,
+                            upload_status = '已上传',
+                            uploaded_at = NOW(),
                             updated_at = NOW()
                         WHERE id = %s
                     """, (str(file_path), delivery_id))
@@ -2261,7 +2263,8 @@ class DeliveryService:
                         "message": "PDF 上传成功",
                         "data": {
                             "delivery_id": delivery_id,
-                            "pdf_path": str(file_path)
+                            "pdf_path": str(file_path),
+                            "upload_status": "已上传"
                         }
                     }
         except Exception as e:
@@ -2289,8 +2292,8 @@ class DeliveryService:
                     with open(file_path, "wb") as f:
                         f.write(pdf_bytes)
 
-                    # 更新数据库
-                    cur.execute("UPDATE pd_deliveries SET delivery_order_pdf = %s WHERE id = %s",
+                    # 替换 PDF 时也保持上传状态为已上传
+                    cur.execute("UPDATE pd_deliveries SET delivery_order_pdf = %s, upload_status = '已上传', uploaded_at = NOW(), updated_at = NOW() WHERE id = %s",
                                 (str(file_path), delivery_id))
                     conn.commit()
 
@@ -2298,7 +2301,7 @@ class DeliveryService:
                     if old_pdf and os.path.exists(old_pdf):
                         os.remove(old_pdf)
 
-                    return {"success": True, "message": "PDF 替换成功", "pdf_path": str(file_path)}
+                    return {"success": True, "message": "PDF 替换成功", "pdf_path": str(file_path), "upload_status": "已上传"}
         except Exception as e:
             logger.error(f"替换 PDF 失败: {e}")
             return {"success": False, "error": str(e)}
