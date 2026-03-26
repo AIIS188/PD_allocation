@@ -848,10 +848,9 @@ class DeliveryService:
             quantity = Decimal(str(data.get('quantity', 0)))
             planned_trucks = self._calculate_trucks(quantity)
             data['planned_trucks'] = planned_trucks
-            if current_user and current_user.get("role") == "大区经理":
-                data['status'] = '审核未通过'
-            else:
-                data['status'] = '审核通过'
+            # 新建一律待审：库内用「审核未通过」表示待审核（与 list_deliveries_by_manager 中
+            # audit_status=待审核 -> status='审核未通过' 一致）；不再按角色自动「审核通过」。
+            data['status'] = '审核未通过'
             # 合同匹配
             target_factory = data.get('target_factory_name')
             exact_contract_no = data.get('contract_no')  # 获取用户指定的合同编号
@@ -1869,7 +1868,10 @@ class DeliveryService:
             - driver_phone: 司机手机号（11位）
             - driver_id_card: 身份证号（18位，末位可为数字或X）
             - product_name: 货物品种（如电动、黑皮、通信、摩托车、大白、牵引、AGM、EFB、电信、小四斤、管式等）
-            - has_delivery_order: 是否有联单（有/无/需办）
+            - has_delivery_order: 是否**随车自带纸质联单**（有/无/需办）。注意：
+              ·「无联单」「不带联单」「没有联单」「走公司凭证」「仅凭证」「需要做联单」「待办联单」均为**无**（司机未随车带联单或走公司侧流程）。
+              · 仅当明确写「有联单」「自带联单」「随车联单」等才填「有」。
+              ·「需办」仅用于明确写后续要去办理、且与「有联单」易混的短句；不要因「已上传凭证」填「有」。
             - target_factory_name: 目标工厂（金利、豫光、万洋、大华、金凤、南方、中原、华铂等）
 
             报单文本：
@@ -1882,7 +1884,7 @@ class DeliveryService:
                 "driver_phone": "13800138000",
                 "driver_id_card": "410881199001011234",
                 "product_name": "电动",
-                "has_delivery_order": "有",
+                "has_delivery_order": "无",
                 "target_factory_name": "金利"
             }}"""
                                         },
@@ -1962,20 +1964,54 @@ class DeliveryService:
             result['product_name'] = str(data['product_name']).strip()
         # =========================================
         
-        # 联单状态标准化
+        # 联单状态标准化：优先识别「无联单」类长句，禁止用子串「有」误判（如「需要做联单」）；
+        # 「已上传」单独出现多为凭证上传，不得等同「有联单」。
         if data.get('has_delivery_order'):
             order_status = str(data['has_delivery_order']).strip()
-            positive = {'有', '是', 'true', '1', 'yes', '自带', '已上传'}
-            negative = {'无', '否', 'false', '0', 'no', '没有', '不带'}
-            need_handle = {'需办', '需要', '待办', '办理'}
-            
+            osn = order_status.replace(" ", "").replace("　", "")
             low = order_status.lower()
-            if order_status in positive or low in positive:
-                result['has_delivery_order'] = '有'
-            elif order_status in need_handle:
-                result['has_delivery_order'] = '需办'
+
+            no_slip_phrases = (
+                "无联单",
+                "没有联单",
+                "不带联单",
+                "未带联单",
+                "无纸质联单",
+                "不需联单",
+                "无需联单",
+                "走凭证",
+                "公司凭证",
+                "仅凭证",
+                "只要凭证",
+                "凭证报单",
+                "需要做联单",
+                "须做联单",
+                "待做联单",
+                "待办联单",
+                "办理联单手续",
+            )
+            yes_slip_phrases = ("有联单", "自带联单", "随车联单", "随车带联单", "纸质联单")
+
+            if any(p in osn for p in no_slip_phrases):
+                result["has_delivery_order"] = "无"
+            elif any(p in osn for p in yes_slip_phrases):
+                result["has_delivery_order"] = "有"
+            elif "已上传" in osn and "联单" in osn and not any(
+                p in osn for p in ("无联单", "没有", "不带", "未")
+            ):
+                result["has_delivery_order"] = "有"
+            elif order_status in {"需办", "待办", "办理"} or osn in ("需办联单",):
+                result["has_delivery_order"] = "需办"
             else:
-                result['has_delivery_order'] = '无'
+                positive_exact = {"有", "是", "自带", "true", "1", "yes"}
+                negative_exact = {"无", "否", "没有", "不带", "false", "0", "no"}
+                if order_status in positive_exact or low in positive_exact:
+                    result["has_delivery_order"] = "有"
+                elif order_status in negative_exact or low in negative_exact:
+                    result["has_delivery_order"] = "无"
+                else:
+                    # 模型输出含糊时默认无联单，避免多收联单费
+                    result["has_delivery_order"] = "无"
         
         # 目标工厂
         if data.get('target_factory_name'):
