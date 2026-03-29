@@ -725,6 +725,25 @@ def ensure_pd_user_permissions_columns():
 		connection.close()
 
 
+def ensure_pd_delivery_plans_tonnage_column():
+	"""旧库补全报货计划 planned_tonnage（CREATE IF NOT EXISTS 不会修改已有表）"""
+	config = get_mysql_config()
+	connection = pymysql.connect(**config)
+	try:
+		with connection.cursor() as cursor:
+			cursor.execute("SHOW COLUMNS FROM pd_delivery_plans LIKE 'planned_tonnage'")
+			if cursor.fetchone() is None:
+				cursor.execute("""
+					ALTER TABLE pd_delivery_plans
+					ADD COLUMN planned_tonnage DECIMAL(12, 3) NOT NULL DEFAULT 0.000 COMMENT '计划吨数'
+					AFTER planned_trucks
+				""")
+				print("pd_delivery_plans 已添加 planned_tonnage 列")
+		connection.commit()
+	finally:
+		connection.close()
+
+
 def migrate_delivery_status_to_audit():
 	"""迁移报单状态：待确认/已确认/已完成/已取消 -> 审核通过/审核未通过"""
 	config = get_mysql_config()
@@ -763,6 +782,7 @@ def create_tables() -> None:
 		init_permission_definitions()
 		ensure_weighbill_audit_columns()
 		ensure_pd_user_permissions_columns()
+		ensure_pd_delivery_plans_tonnage_column()
 		migrate_delivery_status_to_audit()
 	finally:
 		connection.close()

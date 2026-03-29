@@ -66,6 +66,10 @@ def _ensure_plan_audit_columns() -> None:
                     parts.append(
                         "ADD COLUMN updated_by_name VARCHAR(64) DEFAULT NULL COMMENT '最后修改人姓名'"
                     )
+                if "planned_tonnage" not in existing:
+                    parts.append(
+                        "ADD COLUMN planned_tonnage DECIMAL(12, 3) NOT NULL DEFAULT 0.000 COMMENT '计划吨数' AFTER planned_trucks"
+                    )
                 if parts:
                     cur.execute("ALTER TABLE pd_delivery_plans " + ", ".join(parts))
             conn.commit()
@@ -194,7 +198,10 @@ class DeliveryPlanService:
             return {"success": False, "error": str(e)}
 
         planned_tonnage_v = float(data.get("planned_tonnage", 0) or 0)
-        planned_trucks_v = planned_trucks_from_tonnage(planned_tonnage_v)
+        if planned_tonnage_v > 0:
+            planned_trucks_v = planned_trucks_from_tonnage(planned_tonnage_v)
+        else:
+            planned_trucks_v = max(0, int(data.get("planned_trucks", 0) or 0))
         confirmed_v = int(data.get("confirmed_trucks", 0) or 0)
         unconfirmed_v = max(0, planned_trucks_v - confirmed_v)
 
@@ -483,6 +490,16 @@ class DeliveryPlanService:
                             crow = cur.fetchone()
                             conf_now = int(crow["confirmed_trucks"]) if crow else 0
                             raw["unconfirmed_trucks"] = max(0, int(raw["planned_trucks"]) - conf_now)
+                        elif "planned_trucks" in raw and raw["planned_trucks"] is not None:
+                            cur.execute(
+                                "SELECT confirmed_trucks FROM pd_delivery_plans WHERE id = %s",
+                                (plan_id,),
+                            )
+                            crow = cur.fetchone()
+                            conf_now = int(crow["confirmed_trucks"]) if crow else 0
+                            raw["unconfirmed_trucks"] = max(
+                                0, int(raw["planned_trucks"]) - conf_now
+                            )
 
                         update_fields: list[str] = []
                         params: list[Any] = []
